@@ -1,0 +1,175 @@
+schema_version: 1
+family: z1
+entries:
+  - id: z1.federal_checkable_deposits_level
+    family: z1
+    title: Federal government; checkable deposits; asset — level
+    description: Z.1 Financial Accounts FL series for federal-government checkable deposits, the Z.1 counterpart used for Treasury cash-position context (Treasury balances at the Federal Reserve and depository institutions).
+    publisher: Board of Governors of the Federal Reserve System
+    aliases:
+      - FL313020005.Q
+      - BOGZ1FL313020005Q
+      - federal government checkable deposits level
+      - Z.1 Treasury cash level
+      - Z.1 TGA level
+    tags: [z1, treasury, federal-government, checkable-deposits, level, fl]
+    verified_on: 2026-07-13
+    history:
+      start: 1945-12-31
+      notes: First observation 1945:Q4 in the 2026-06-11 Z.1 CSV package.
+    frequency: quarterly, end of period
+    units:
+      label: Millions of U.S. dollars
+      scale: millions
+      seasonal_adjustment: not seasonally adjusted
+      annualized: false
+      unit_class: usd_millions_nsa
+    endpoint:
+      url: https://www.federalreserve.gov/releases/z1/current/z1_csv_files.zip
+      series_id: FL313020005.Q
+      default_params: {}
+      allowed_params: []
+    access:
+      executor: z1
+      mode: machine
+      auth:
+        mode: none
+    response:
+      format: zip_csv
+      date_fields: [date]
+      value_fields: [value]
+      pagination:
+        kind: none
+      vintage_strategy: release_date
+    refresh:
+      cadence: quarterly
+      notes: The dated Z.1 release is the source vintage; one package download serves all series.
+    semantics:
+      kind: FL
+      granularity: federal government asset
+      basis: balance-sheet level
+      notes: FL means level.
+    tools: [z1_series]
+    caveats:
+      - id: z1.fl.level_not_flow
+        severity: critical
+        message: FL is a level. Do not label a first difference of this series as the Z.1 transaction flow; use the corresponding FU series.
+      - id: z1.not_dts_tga
+        severity: warning
+        message: Federal checkable deposits are not identical to the DTS Treasury General Account balance; the Z.1 concept is quarterly, includes deposits outside the Federal Reserve, and follows Z.1 sectoring.
+      - id: z1.revisions
+        severity: warning
+        message: Z.1 releases can make major historical and structural revisions. Pin and report the release vintage.
+
+  - id: z1.federal_checkable_deposits_transactions
+    family: z1
+    title: Federal government; checkable deposits; asset — transactions
+    description: Z.1 Financial Accounts FU series for transactions in federal-government checkable deposits, the flow counterpart of the Z.1 Treasury cash-position level.
+    publisher: Board of Governors of the Federal Reserve System
+    aliases:
+      - FU313020005.Q
+      - BOGZ1FU313020005Q
+      - federal government checkable deposits transactions
+      - Z.1 Treasury cash flow
+      - Z.1 TGA flow
+    tags: [z1, treasury, federal-government, checkable-deposits, transactions, fu]
+    verified_on: 2026-07-13
+    history:
+      start: 1946-12-31
+      notes: First observation 1946:Q4 in the 2026-06-11 Z.1 CSV package.
+    frequency: quarterly, end of period
+    units:
+      label: Millions of U.S. dollars
+      scale: millions
+      seasonal_adjustment: not seasonally adjusted
+      annualized: false
+      unit_class: usd_millions_nsa
+    endpoint:
+      url: https://www.federalreserve.gov/releases/z1/current/z1_csv_files.zip
+      series_id: FU313020005.Q
+      default_params: {}
+      allowed_params: []
+    access:
+      executor: z1
+      mode: machine
+      auth:
+        mode: none
+    response:
+      format: zip_csv
+      date_fields: [date]
+      value_fields: [value]
+      pagination:
+        kind: none
+      vintage_strategy: release_date
+    refresh:
+      cadence: quarterly
+      notes: The dated Z.1 release is the source vintage; one package download serves all series.
+    semantics:
+      kind: FU
+      granularity: federal government asset
+      basis: transaction flow
+      notes: FU means transactions.
+    tools: [z1_series]
+    caveats:
+      - id: z1.fu.transaction_not_level
+        severity: critical
+        message: FU is the transactions concept, not the end-of-period asset level. Use the corresponding FL series for stocks.
+      - id: z1.revisions
+        severity: warning
+        message: Z.1 releases can make major historical and structural revisions. Pin and report the release vintage.
+
+  - id: z1.household_treasury_market_value
+    family: z1
+    title: Household and nonprofit Treasury securities — market-value level
+    description: Z.1 Financial Accounts LM series for household and nonprofit Treasury-security assets at market value.
+    publisher: Board of Governors of the Federal Reserve System
+    aliases:
+      - LM153061105.Q
+      - BOGZ1LM153061105Q
+      - household Treasury holdings market value
+      - household Treasury securities level
+    tags: [z1, treasury, households, holdings, market-value, lm]
+    verified_on: 2026-07-13
+    history:
+      start: 1945-12-31
+      notes: First observation 1945:Q4 in the 2026-06-11 Z.1 CSV package.
+    frequency: quarterly, end of period
+    units:
+      label: Millions of U.S. dollars
+      scale: millions
+      seasonal_adjustment: not seasonally adjusted
+      annualized: false
+      unit_class: usd_millions_nsa
+    endpoint:
+      url: https://www.federalreserve.gov/releases/z1/current/z1_csv_files.zip
+      series_id: LM153061105.Q
+      default_params: {}
+      allowed_params: []
+    access:
+      executor: z1
+      mode: machine
+      auth:
+        mode: none
+    response:
+      format: zip_csv
+      date_fields: [date]
+      value_fields: [value]
+      pagination:
+        kind: none
+      vintage_strategy: release_date
+    refresh:
+      cadence: quarterly
+      notes: The dated Z.1 release is the source vintage; one package download serves all series.
+    semantics:
+      kind: LM
+      granularity: household and nonprofit asset
+      basis: market-value level
+      notes: LM means market-value level.
+    tools: [z1_series]
+    caveats:
+      - id: z1.lm.valuation_effects
+        severity: critical
+        message: LM is a market-value level. Its change includes valuation and other adjustments; do not present the level change as Treasury purchases or transaction flow.
+      - id: z1.revisions
+        severity: warning
+        message: Z.1 releases can make major historical and structural revisions. Pin and report the release vintage.

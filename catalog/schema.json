@@ -1,0 +1,946 @@
+{
+  "$defs": {
+    "AccessMode": {
+      "enum": [
+        "machine",
+        "browser_download_only"
+      ],
+      "title": "AccessMode",
+      "type": "string"
+    },
+    "AccessSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "auth": {
+          "$ref": "#/$defs/AuthSpec"
+        },
+        "executor": {
+          "$ref": "#/$defs/ExecutorKind"
+        },
+        "mode": {
+          "$ref": "#/$defs/AccessMode",
+          "default": "machine"
+        }
+      },
+      "required": [
+        "executor"
+      ],
+      "title": "AccessSpec",
+      "type": "object"
+    },
+    "AlwaysPredicate": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "always",
+          "default": "always",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "title": "AlwaysPredicate",
+      "type": "object"
+    },
+    "AuthMode": {
+      "enum": [
+        "none",
+        "optional",
+        "required"
+      ],
+      "title": "AuthMode",
+      "type": "string"
+    },
+    "AuthSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "env_var": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Env Var"
+        },
+        "mode": {
+          "$ref": "#/$defs/AuthMode",
+          "default": "none"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        }
+      },
+      "title": "AuthSpec",
+      "type": "object"
+    },
+    "CatalogEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "access": {
+          "$ref": "#/$defs/AccessSpec"
+        },
+        "aliases": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "caveats": {
+          "items": {
+            "$ref": "#/$defs/Caveat"
+          },
+          "title": "Caveats",
+          "type": "array"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "endpoint": {
+          "$ref": "#/$defs/EndpointSpec"
+        },
+        "family": {
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "title": "Family",
+          "type": "string"
+        },
+        "frequency": {
+          "title": "Frequency",
+          "type": "string"
+        },
+        "history": {
+          "$ref": "#/$defs/HistorySpec"
+        },
+        "id": {
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "publisher": {
+          "title": "Publisher",
+          "type": "string"
+        },
+        "refresh": {
+          "$ref": "#/$defs/RefreshSpec"
+        },
+        "response": {
+          "$ref": "#/$defs/ResponseSpec"
+        },
+        "semantics": {
+          "$ref": "#/$defs/SemanticsSpec"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "tools": {
+          "items": {
+            "$ref": "#/$defs/ToolName"
+          },
+          "minItems": 1,
+          "title": "Tools",
+          "type": "array"
+        },
+        "units": {
+          "$ref": "#/$defs/UnitSpec"
+        },
+        "verified_on": {
+          "format": "date",
+          "title": "Verified On",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "family",
+        "title",
+        "description",
+        "publisher",
+        "verified_on",
+        "history",
+        "frequency",
+        "units",
+        "endpoint",
+        "access",
+        "response",
+        "refresh",
+        "tools"
+      ],
+      "title": "CatalogEntry",
+      "type": "object"
+    },
+    "Caveat": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity",
+          "default": "warning"
+        },
+        "source_note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Note"
+        },
+        "when": {
+          "$ref": "#/$defs/CaveatWhen"
+        }
+      },
+      "required": [
+        "id",
+        "message"
+      ],
+      "title": "Caveat",
+      "type": "object"
+    },
+    "CaveatWhen": {
+      "additionalProperties": false,
+      "properties": {
+        "match": {
+          "default": "all",
+          "enum": [
+            "all",
+            "any"
+          ],
+          "title": "Match",
+          "type": "string"
+        },
+        "predicates": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "always": "#/$defs/AlwaysPredicate",
+                "date_range_crosses": "#/$defs/DateRangeCrossesPredicate",
+                "date_range_intersects": "#/$defs/DateRangeIntersectsPredicate",
+                "kind_in": "#/$defs/KindInPredicate",
+                "param_equals": "#/$defs/ParamEqualsPredicate",
+                "param_in": "#/$defs/ParamInPredicate",
+                "unit_mixing": "#/$defs/UnitMixingPredicate"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/AlwaysPredicate"
+              },
+              {
+                "$ref": "#/$defs/DateRangeIntersectsPredicate"
+              },
+              {
+                "$ref": "#/$defs/DateRangeCrossesPredicate"
+              },
+              {
+                "$ref": "#/$defs/ParamEqualsPredicate"
+              },
+              {
+                "$ref": "#/$defs/ParamInPredicate"
+              },
+              {
+                "$ref": "#/$defs/UnitMixingPredicate"
+              },
+              {
+                "$ref": "#/$defs/KindInPredicate"
+              }
+            ]
+          },
+          "minItems": 1,
+          "title": "Predicates",
+          "type": "array"
+        }
+      },
+      "title": "CaveatWhen",
+      "type": "object"
+    },
+    "DateRangeCrossesPredicate": {
+      "additionalProperties": false,
+      "properties": {
+        "boundary": {
+          "format": "date",
+          "title": "Boundary",
+          "type": "string"
+        },
+        "type": {
+          "const": "date_range_crosses",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "boundary"
+      ],
+      "title": "DateRangeCrossesPredicate",
+      "type": "object"
+    },
+    "DateRangeIntersectsPredicate": {
+      "additionalProperties": false,
+      "properties": {
+        "end": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End"
+        },
+        "start": {
+          "format": "date",
+          "title": "Start",
+          "type": "string"
+        },
+        "type": {
+          "const": "date_range_intersects",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "start"
+      ],
+      "title": "DateRangeIntersectsPredicate",
+      "type": "object"
+    },
+    "EndpointSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_params": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Params",
+          "type": "array"
+        },
+        "api_key_param": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key Param"
+        },
+        "api_url": {
+          "anyOf": [
+            {
+              "format": "uri",
+              "maxLength": 2083,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Url"
+        },
+        "default_params": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Default Params",
+          "type": "object"
+        },
+        "end_param": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Param"
+        },
+        "local_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Local Path"
+        },
+        "method": {
+          "const": "GET",
+          "default": "GET",
+          "title": "Method",
+          "type": "string"
+        },
+        "path_template": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path Template"
+        },
+        "series_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Series Id"
+        },
+        "start_param": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Param"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "format": "uri",
+              "maxLength": 2083,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        }
+      },
+      "title": "EndpointSpec",
+      "type": "object"
+    },
+    "ExecutorKind": {
+      "enum": [
+        "fred",
+        "fiscaldata",
+        "z1",
+        "soma",
+        "release",
+        "json_api",
+        "bls",
+        "file",
+        "local_file",
+        "browser_download"
+      ],
+      "title": "ExecutorKind",
+      "type": "string"
+    },
+    "HistorySpec": {
+      "additionalProperties": false,
+      "properties": {
+        "end": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End"
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Notes"
+        },
+        "start": {
+          "format": "date",
+          "title": "Start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start"
+      ],
+      "title": "HistorySpec",
+      "type": "object"
+    },
+    "KindInPredicate": {
+      "additionalProperties": false,
+      "properties": {
+        "kinds": {
+          "items": {
+            "enum": [
+              "FU",
+              "FL",
+              "LM"
+            ],
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Kinds",
+          "type": "array"
+        },
+        "type": {
+          "const": "kind_in",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "kinds"
+      ],
+      "title": "KindInPredicate",
+      "type": "object"
+    },
+    "PaginationSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "default_page_size": {
+          "anyOf": [
+            {
+              "maximum": 10000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Page Size"
+        },
+        "hard_max_pages": {
+          "default": 100,
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Hard Max Pages",
+          "type": "integer"
+        },
+        "kind": {
+          "default": "none",
+          "enum": [
+            "none",
+            "fiscaldata"
+          ],
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "title": "PaginationSpec",
+      "type": "object"
+    },
+    "ParamEqualsPredicate": {
+      "additionalProperties": false,
+      "properties": {
+        "param": {
+          "title": "Param",
+          "type": "string"
+        },
+        "type": {
+          "const": "param_equals",
+          "title": "Type",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "param",
+        "value"
+      ],
+      "title": "ParamEqualsPredicate",
+      "type": "object"
+    },
+    "ParamInPredicate": {
+      "additionalProperties": false,
+      "properties": {
+        "param": {
+          "title": "Param",
+          "type": "string"
+        },
+        "type": {
+          "const": "param_in",
+          "title": "Type",
+          "type": "string"
+        },
+        "values": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Values",
+          "type": "array"
+        }
+      },
+      "required": [
+        "type",
+        "param",
+        "values"
+      ],
+      "title": "ParamInPredicate",
+      "type": "object"
+    },
+    "RefreshSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "cadence": {
+          "title": "Cadence",
+          "type": "string"
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Notes"
+        }
+      },
+      "required": [
+        "cadence"
+      ],
+      "title": "RefreshSpec",
+      "type": "object"
+    },
+    "ResponseFormat": {
+      "enum": [
+        "csv",
+        "tsv",
+        "json",
+        "zip_csv",
+        "html",
+        "binary"
+      ],
+      "title": "ResponseFormat",
+      "type": "string"
+    },
+    "ResponseSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "data_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data Path"
+        },
+        "date_fields": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Date Fields",
+          "type": "array"
+        },
+        "date_normalizer": {
+          "anyOf": [
+            {
+              "const": "bea_period",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Date Normalizer"
+        },
+        "format": {
+          "$ref": "#/$defs/ResponseFormat"
+        },
+        "pagination": {
+          "$ref": "#/$defs/PaginationSpec"
+        },
+        "value_fields": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Value Fields",
+          "type": "array"
+        },
+        "vintage_strategy": {
+          "$ref": "#/$defs/VintageStrategy",
+          "default": "retrieval"
+        }
+      },
+      "required": [
+        "format"
+      ],
+      "title": "ResponseSpec",
+      "type": "object"
+    },
+    "SemanticsSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "basis": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Basis"
+        },
+        "granularity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Granularity"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "enum": [
+                "FU",
+                "FL",
+                "LM"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Kind"
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Notes"
+        }
+      },
+      "title": "SemanticsSpec",
+      "type": "object"
+    },
+    "Severity": {
+      "enum": [
+        "info",
+        "warning",
+        "critical"
+      ],
+      "title": "Severity",
+      "type": "string"
+    },
+    "ToolName": {
+      "enum": [
+        "get_series",
+        "get_file",
+        "fiscaldata_query",
+        "z1_series",
+        "soma_holdings",
+        "release_table"
+      ],
+      "title": "ToolName",
+      "type": "string"
+    },
+    "UnitMixingPredicate": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "unit_mixing",
+          "title": "Type",
+          "type": "string"
+        },
+        "with_unit_classes": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "With Unit Classes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "type",
+        "with_unit_classes"
+      ],
+      "title": "UnitMixingPredicate",
+      "type": "object"
+    },
+    "UnitSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "annualized": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": false,
+          "description": "Whether source values are annualized; null means the source route supplied insufficient metadata to determine annualization.",
+          "title": "Annualized"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "scale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scale"
+        },
+        "seasonal_adjustment": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seasonal Adjustment"
+        },
+        "unit_class": {
+          "default": "not_saar",
+          "title": "Unit Class",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "title": "UnitSpec",
+      "type": "object"
+    },
+    "VintageStrategy": {
+      "enum": [
+        "fred_realtime_or_http",
+        "http_last_modified_or_retrieval",
+        "retrieval",
+        "release_date"
+      ],
+      "title": "VintageStrategy",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "entries": {
+      "items": {
+        "$ref": "#/$defs/CatalogEntry"
+      },
+      "minItems": 1,
+      "title": "Entries",
+      "type": "array"
+    },
+    "family": {
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "title": "Family",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "family",
+    "entries"
+  ],
+  "title": "CatalogFile",
+  "type": "object"
+}

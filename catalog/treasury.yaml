@@ -1,0 +1,54 @@
+schema_version: 1
+family: treasury
+entries:
+  - id: treasury.hqm_yield_curve_pars
+    family: treasury
+    title: HQM corporate bond yield curve — end-of-month par yields workbook
+    description: Treasury's High Quality Market corporate bond yield curve, end-of-month par yields by maturity, published as an XLS workbook.
+    publisher: U.S. Department of the Treasury, Office of Economic Policy
+    aliases:
+      - HQM
+      - hqmeom_qh_pars
+      - corporate bond yield curve
+      - high quality market curve
+    tags: [treasury, hqm, corporate, yields, curve, monthly]
+    verified_on: 2026-07-13
+    history:
+      start: 1984-01-31
+      notes: The published workbook's stated coverage begins in 1984; verify the sheet range after download.
+    frequency: monthly, end of month
+    units:
+      label: Percent per annum, par yield by maturity
+      scale: percent
+      seasonal_adjustment: not applicable
+      annualized: true
+      unit_class: percent_rate
+    endpoint:
+      url: https://home.treasury.gov/system/files/226/hqmeom_qh_pars.xls
+      default_params: {}
+      allowed_params: []
+    access:
+      executor: file
+      mode: machine
+      auth:
+        mode: none
+    response:
+      format: binary
+      pagination:
+        kind: none
+      vintage_strategy: http_last_modified_or_retrieval
+    refresh:
+      cadence: monthly
+      notes: Updated with the monthly HQM release.
+    semantics:
+      granularity: maturity by month, spot workbook layout
+      basis: high-quality (A-and-above) corporate market par yields
+      notes: Legacy XLS workbook; read locally with a spreadsheet library.
+    tools: [get_file]
+    caveats:
+      - id: treasury.hqm_corporate_not_treasury
+        severity: critical
+        message: HQM is a corporate bond yield curve, not the Treasury yield curve. Do not use it as a risk-free or Treasury par curve; it embeds high-grade corporate credit spread.
+      - id: treasury.hqm_xls_layout
+        severity: warning
+        message: The workbook is legacy XLS with a multi-header layout that changes occasionally; parse defensively and validate a known cell before bulk extraction.

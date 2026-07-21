@@ -1,0 +1,53 @@
+name: Weekly live source smoke
+
+on:
+  schedule:
+    - cron: "17 13 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - run: uv sync --frozen
+      - id: live
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          uv run python scripts/live_smoke.py 2>&1 | tee live-smoke.log
+      - name: Open or update failure issue
+        if: steps.live.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          title="Weekly live source smoke failed"
+          body_file="live-smoke-issue.md"
+          {
+            echo "The scheduled FRED/FiscalData source smoke failed."
+            echo
+            echo "Workflow: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo
+            echo '```text'
+            tail -n 200 live-smoke.log
+            echo '```'
+          } > "$body_file"
+          issue_number=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$issue_number" ]; then
+            gh issue comment "$issue_number" --body-file "$body_file"
+          else
+            gh issue create --title "$title" --body-file "$body_file"
+          fi
+      - name: Fail workflow after issue handling
+        if: steps.live.outcome == 'failure'
+        run: exit 1

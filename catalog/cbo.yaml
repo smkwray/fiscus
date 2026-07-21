@@ -1,0 +1,104 @@
+schema_version: 1
+family: cbo
+entries:
+  - id: cbo.baselines_github
+    family: cbo
+    title: CBO budget-baseline history (US-CBO eval-projections mirror)
+    description: All CBO baseline projections by vintage — debt, deficits, outlays, revenues by component and projected fiscal year — from the official US-CBO GitHub repository's machine-readable baselines.csv.
+    publisher: Congressional Budget Office (official GitHub mirror)
+    aliases:
+      - CBO baselines
+      - baselines.csv
+      - eval-projections
+      - CBO projections history
+    tags: [cbo, budget, baseline, projections, fiscal]
+    verified_on: 2026-07-13
+    history:
+      start: 1982-02-01
+      notes: Earliest baseline_date verified by full-file parse (1982-02-01); about 20,000 rows.
+    frequency: per baseline release (usually twice a year)
+    units:
+      label: Billions of dollars, field-specific
+      scale: billions
+      seasonal_adjustment: not applicable
+      annualized: false
+      unit_class: usd_billions_nsa
+    endpoint:
+      url: https://raw.githubusercontent.com/US-CBO/eval-projections/main/input_data/baselines.csv
+      default_params: {}
+      allowed_params: []
+    access:
+      executor: file
+      mode: machine
+      auth:
+        mode: none
+    response:
+      format: csv
+      date_fields: [baseline_date]
+      value_fields: [value]
+      pagination:
+        kind: none
+      vintage_strategy: http_last_modified_or_retrieval
+    refresh:
+      cadence: per baseline release
+      notes: The repository updates after each CBO baseline publication.
+    semantics:
+      granularity: component, category, subcategory, baseline vintage, projected fiscal year
+      basis: as-published baseline projections
+      notes: Columns include component, category, subcategory, baseline_date, Spring_flag, Winter_flag, projected_fiscal_year, projected_year_number, value.
+    tools: [get_file]
+    caveats:
+      - id: cbo.projection_vintages
+        severity: critical
+        message: Rows are projections by baseline vintage, not outcomes. Filter on baseline_date before use; mixing vintages silently blends incompatible economic assumptions.
+      - id: cbo.github_is_mirror
+        severity: warning
+        message: This is CBO's GitHub companion dataset for projection evaluation. For citation-grade tables, cross-check against the report XLSX on cbo.gov, which requires a browser download.
+
+  - id: cbo.budget_data_official
+    family: cbo
+    title: CBO budget and economic data downloads (cbo.gov)
+    description: Official CBO downloadable baseline and projection workbooks on cbo.gov, which reject automated download clients.
+    publisher: Congressional Budget Office
+    aliases:
+      - CBO official downloads
+      - cbo.gov data
+      - 10-year baseline XLSX
+    tags: [cbo, budget, baseline, browser-only]
+    verified_on: 2026-07-13
+    history:
+      start: 1984-02-01
+      notes: Report-page archives extend through CBO's publication history.
+    frequency: per publication
+    units:
+      label: Workbook-specific
+      scale: mixed
+      seasonal_adjustment: not applicable
+      annualized: false
+      unit_class: mixed_fields
+    endpoint:
+      url: https://www.cbo.gov/data/budget-economic-data
+      default_params: {}
+      allowed_params: []
+    access:
+      executor: browser_download
+      mode: browser_download_only
+      auth:
+        mode: none
+    response:
+      format: binary
+      pagination:
+        kind: none
+      vintage_strategy: retrieval
+    refresh:
+      cadence: per publication
+      notes: Major baselines publish in winter and spring.
+    semantics:
+      granularity: publication workbook
+      basis: official published tables
+      notes: cbo.gov fronts downloads with DataDome, which returns HTTP 403 to non-browser clients.
+    tools: [get_file]
+    caveats:
+      - id: cbo.datadome_blocks_agents
+        severity: critical
+        message: cbo.gov returns HTTP 403 to automated download clients (DataDome). Download workbooks in a browser session, or use the machine-readable GitHub baselines entry for projection data; an automated fetch of cbo.gov cannot succeed and this entry exists to say so explicitly.
