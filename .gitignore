@@ -1,0 +1,58 @@
+# Agent orchestration (prompts, handoff, delegates)
+do/
+
+# Internal docs not for the repo
+docs/
+
+# Environment
+.env
+.venv/
+
+# Plans
+*.plan.md
+plan.md
+plans/
+
+# Data and generated outputs (project-local working state)
+/data/
+/var/
+/outputs/
+/tmp/
+
+# Python artifacts (defense in depth — env rules ban these too)
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+
+# Root agent-instruction stubs (auto-loaded, never tracked)
+CLAUDE.md
+AGENTS.md
+
+# .githooks/ is INTENTIONALLY NOT IGNORED — it ships the pre-commit hook
+# that other contributors install with `git config core.hooksPath .githooks`
+
+# Local configuration and secrets (skeleton additions)
+.env.*
+!.env.example
+
+# Local data and catalog overlays
+.fiscus/
+local-catalog/
+
+# Coverage / misc python
+.coverage
+htmlcov/
+*.py[cod]
+*.so
+Thumbs.db

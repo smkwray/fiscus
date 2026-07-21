@@ -1,0 +1,164 @@
+schema_version: 1
+family: bls
+entries:
+  - id: bls.lns14000000
+    family: bls
+    title: Unemployment rate, 16 years and over, seasonally adjusted
+    description: Civilian unemployment rate from the Current Population Survey, monthly, seasonally adjusted.
+    publisher: U.S. Bureau of Labor Statistics
+    aliases:
+      - LNS14000000
+      - unemployment rate
+      - U-3
+      - CPS unemployment
+    tags: [bls, cps, labor, unemployment, monthly]
+    verified_on: 2026-07-13
+    history:
+      start: 1948-01-31
+      notes: 1948M01 verified via the API (value 3.4).
+    frequency: monthly
+    units:
+      label: Percent, seasonally adjusted
+      scale: percent
+      seasonal_adjustment: seasonally adjusted
+      annualized: false
+      unit_class: percent_rate
+    endpoint:
+      url: https://api.bls.gov/publicAPI/v2/timeseries/data/
+      series_id: LNS14000000
+      default_params: {}
+      allowed_params: []
+    access:
+      executor: bls
+      mode: machine
+      auth:
+        mode: optional
+        env_var: BLS_API_KEY
+        note: Keyless requests are limited to 10 years per query and 25 queries per day; a free key raises limits to 20 years and 500 queries.
+    response:
+      format: json
+      date_fields: [date]
+      value_fields: [value]
+      pagination:
+        kind: none
+      vintage_strategy: retrieval
+    refresh:
+      cadence: monthly
+      notes: Employment Situation release, usually the first Friday of the month.
+    semantics:
+      granularity: national monthly rate
+      basis: CPS household survey
+      notes: Period codes are preserved alongside synthesized period-end dates.
+    tools: [get_series]
+    caveats:
+      - id: bls.year_window_limit
+        severity: warning
+        message: The API caps each request at 10 years without a key and 20 years with one. A long history requires multiple year-windowed calls; a single call silently returns only the requested window.
+      - id: bls.cps_revisions
+        severity: info
+        message: Seasonally adjusted CPS series revise with annual seasonal-factor updates and population-control adjustments; January observations can shift levels without underlying labor-market change.
+
+  - id: bls.ces0500000001
+    family: bls
+    title: All employees, total private, seasonally adjusted
+    description: Total private nonfarm payroll employment from the Current Employment Statistics survey, monthly, seasonally adjusted.
+    publisher: U.S. Bureau of Labor Statistics
+    aliases:
+      - CES0500000001
+      - private payrolls
+      - total private employment
+      - payroll jobs
+    tags: [bls, ces, labor, payrolls, employment, monthly]
+    verified_on: 2026-07-13
+    history:
+      start: 1939-01-31
+      notes: 1939M01 verified via the API (value 25935).
+    frequency: monthly
+    units:
+      label: Thousands of persons, seasonally adjusted
+      scale: thousands
+      seasonal_adjustment: seasonally adjusted
+      annualized: false
+      unit_class: persons_thousands
+    endpoint:
+      url: https://api.bls.gov/publicAPI/v2/timeseries/data/
+      series_id: CES0500000001
+      default_params: {}
+      allowed_params: []
+    access:
+      executor: bls
+      mode: machine
+      auth:
+        mode: optional
+        env_var: BLS_API_KEY
+        note: Keyless requests are limited to 10 years per query and 25 queries per day; a free key raises limits to 20 years and 500 queries.
+    response:
+      format: json
+      date_fields: [date]
+      value_fields: [value]
+      pagination:
+        kind: none
+      vintage_strategy: retrieval
+    refresh:
+      cadence: monthly
+      notes: Employment Situation release; the two most recent months are preliminary.
+    semantics:
+      granularity: national monthly level
+      basis: CES establishment survey
+      notes: Levels are in thousands; convert before combining with person-count series.
+    tools: [get_series]
+    caveats:
+      - id: bls.year_window_limit
+        severity: warning
+        message: The API caps each request at 10 years without a key and 20 years with one. A long history requires multiple year-windowed calls; a single call silently returns only the requested window.
+      - id: bls.ces_benchmark_revisions
+        severity: warning
+        message: CES levels are benchmarked annually to unemployment-insurance records; preliminary months revise twice and benchmark revisions can move levels by hundreds of thousands.
+
+  - id: bls.cpi_relative_importance
+    family: bls
+    title: CPI-U relative importance of components (annual table)
+    description: Annual relative-importance weights of CPI-U components, published as an XLSX table on bls.gov.
+    publisher: U.S. Bureau of Labor Statistics
+    aliases:
+      - CPI relative importance
+      - CPI-U weights
+      - relative importance table
+    tags: [bls, cpi, weights, browser-only]
+    verified_on: 2026-07-13
+    history:
+      start: 1987-12-31
+      notes: Published annually; older tables exist as documents.
+    frequency: annual
+    units:
+      label: Percent of CPI-U all items
+      scale: percent
+      seasonal_adjustment: not applicable
+      annualized: false
+      unit_class: percent_share
+    endpoint:
+      url: https://www.bls.gov/cpi/tables/relative-importance/home.htm
+      default_params: {}
+      allowed_params: []
+    access:
+      executor: browser_download
+      mode: browser_download_only
+      auth:
+        mode: none
+    response:
+      format: binary
+      pagination:
+        kind: none
+      vintage_strategy: retrieval
+    refresh:
+      cadence: annual
+      notes: December-weight tables post early in the following year.
+    semantics:
+      granularity: CPI item structure by year
+      basis: expenditure weights
+      notes: bls.gov rejects non-browser download clients for these files with HTTP 403.
+    tools: [get_file]
+    caveats:
+      - id: bls.browser_download_only
+        severity: critical
+        message: bls.gov blocks non-browser agents from downloading these XLSX tables (HTTP 403). Retrieve the file in a browser session and register it locally; an automated fetch cannot succeed and this entry exists to say so explicitly.

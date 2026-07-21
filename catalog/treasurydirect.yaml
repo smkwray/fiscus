@@ -1,0 +1,58 @@
+schema_version: 1
+family: treasurydirect
+entries:
+  - id: treasurydirect.auctioned_securities
+    family: treasurydirect
+    title: Recently auctioned Treasury securities
+    description: Auction results for recently auctioned marketable Treasury securities from the TreasuryDirect securities web service.
+    publisher: U.S. Department of the Treasury, Bureau of the Fiscal Service
+    aliases:
+      - TreasuryDirect auctions
+      - recent auction results
+      - auctioned securities
+      - TA_WS
+    tags: [treasurydirect, auctions, treasury, issuance]
+    verified_on: 2026-07-13
+    history:
+      start: 2008-01-01
+      notes: The service is windowed by a days parameter over recent auctions; it is not a full-history endpoint.
+    frequency: per auction
+    units:
+      label: Field-specific (rates in percent, amounts in dollars)
+      scale: mixed
+      seasonal_adjustment: not applicable
+      annualized: false
+      unit_class: mixed_fields
+    endpoint:
+      url: https://www.treasurydirect.gov/TA_WS/securities/auctioned
+      default_params:
+        days: "30"
+      allowed_params: [days, type]
+    access:
+      executor: json_api
+      mode: machine
+      auth:
+        mode: none
+    response:
+      format: json
+      data_path: "."
+      date_fields: [auctionDate]
+      value_fields: [highYield, highDiscountRate, totalAccepted]
+      pagination:
+        kind: none
+      vintage_strategy: http_last_modified_or_retrieval
+    refresh:
+      cadence: per auction
+      notes: Results post shortly after each auction closes.
+    semantics:
+      granularity: one row per auctioned security
+      basis: official auction results
+      notes: type accepts Bill, Note, Bond, TIPS, FRN, and CMB; dates carry a T00:00:00 suffix.
+    tools: [get_series]
+    caveats:
+      - id: treasurydirect.recent_window_only
+        severity: critical
+        message: This endpoint returns only a recent window controlled by the days parameter. For the full auction history since 1979 use the FiscalData auctions dataset instead; a large days value does not reach deep history.
+      - id: treasurydirect.mixed_units
+        severity: warning
+        message: Fields mix percent rates, prices per hundred, and dollar amounts, and which rate field is populated depends on security type (highDiscountRate for bills, highYield for notes and bonds).

@@ -1,0 +1,160 @@
+schema_version: 1
+family: bea
+entries:
+  - id: bea.nipa_t10106
+    family: bea
+    title: NIPA Table 1.1.6 — real GDP and components, chained 2017 dollars
+    description: Quarterly real gross domestic product and its expenditure components from BEA NIPA Table 1.1.6, one row per table line per period.
+    publisher: U.S. Bureau of Economic Analysis
+    aliases:
+      - T10106
+      - real GDP
+      - GDP components
+      - A191RX
+      - NIPA 1.1.6
+    tags: [bea, nipa, gdp, real, national-accounts]
+    verified_on: 2026-07-13
+    history:
+      start: 1947-03-31
+      notes: NIPA quarterly estimates begin 1947Q1.
+    frequency: quarterly
+    units:
+      label: Millions of chained 2017 dollars, seasonally adjusted annual rate
+      scale: millions
+      seasonal_adjustment: seasonally adjusted
+      annualized: true
+      unit_class: usd_millions_saar
+    endpoint:
+      url: https://apps.bea.gov/api/data/
+      default_params:
+        method: GetData
+        datasetname: NIPA
+        TableName: T10106
+        Frequency: Q
+        Year: X
+        ResultFormat: json
+      allowed_params: [Year, Frequency]
+      api_key_param: UserID
+    access:
+      executor: json_api
+      mode: machine
+      auth:
+        mode: required
+        env_var: BEA_API_KEY
+        note: Free key from bea.gov/API; the request fails without one.
+    response:
+      format: json
+      data_path: BEAAPI.Results.Data
+      date_fields: [date, TimePeriod]
+      value_fields: [DataValue]
+      date_normalizer: bea_period
+      pagination:
+        kind: none
+      vintage_strategy: retrieval
+    refresh:
+      cadence: monthly
+      notes: Advance, second, and third estimates revise recent quarters; annual updates revise history.
+    semantics:
+      granularity: table line (LineNumber, SeriesCode) by period
+      basis: chained-dollar quantity estimates
+      notes: Filter rows by SeriesCode or LineNumber before use; the table is not one series.
+    tools: [get_series]
+    caveats:
+      - id: bea.saar_units
+        severity: critical
+        message: NIPA quarterly levels are seasonally adjusted annual rates. Divide by four for a quarterly-flow reading; fiscus returns the source values without transforming them.
+        source_note: BEA annual-rate convention multiplies quarterly activity by four.
+      - id: bea.saar_unit_mixing
+        severity: critical
+        message: Do not mix this SAAR series with not-annualized amounts without an explicit unit conversion.
+        when:
+          match: all
+          predicates:
+            - type: unit_mixing
+              with_unit_classes: [usd_millions_nsa, usd_not_saar, usd_billions_nsa]
+      - id: bea.datavalue_commas
+        severity: critical
+        message: DataValue strings contain comma thousands separators; strip commas before numeric parsing.
+      - id: bea.chained_nonadditive
+        severity: warning
+        message: Chained-dollar components do not sum to chained-dollar aggregates away from the reference year; do not force additivity.
+      - id: bea.table_rows
+        severity: warning
+        message: The response is the whole table (one row per line per period). Select the intended SeriesCode or LineNumber; a naive read mixes GDP with its components.
+
+  - id: bea.pce_underlying_u20405
+    family: bea
+    title: PCE underlying detail Table 2.4.5U — current-dollar PCE by detailed type of product, monthly
+    description: Monthly current-dollar personal consumption expenditures at detailed product level from BEA NIUnderlyingDetail Table U20405.
+    publisher: U.S. Bureau of Economic Analysis
+    aliases:
+      - U20405
+      - PCE underlying detail
+      - PCE by product monthly
+      - NIUnderlyingDetail
+    tags: [bea, pce, consumption, monthly, detail]
+    verified_on: 2026-07-13
+    history:
+      start: 1959-01-31
+      notes: 1959 monthly rows verified via the API; the table may not extend earlier.
+    frequency: monthly
+    units:
+      label: Millions of dollars, seasonally adjusted annual rate
+      scale: millions
+      seasonal_adjustment: seasonally adjusted
+      annualized: true
+      unit_class: usd_millions_saar
+    endpoint:
+      url: https://apps.bea.gov/api/data/
+      default_params:
+        method: GetData
+        datasetname: NIUnderlyingDetail
+        TableName: U20405
+        Frequency: M
+        Year: X
+        ResultFormat: json
+      allowed_params: [Year, Frequency]
+      api_key_param: UserID
+    access:
+      executor: json_api
+      mode: machine
+      auth:
+        mode: required
+        env_var: BEA_API_KEY
+        note: Free key from bea.gov/API; the request fails without one.
+    response:
+      format: json
+      data_path: BEAAPI.Results.Data
+      date_fields: [date, TimePeriod]
+      value_fields: [DataValue]
+      date_normalizer: bea_period
+      pagination:
+        kind: none
+      vintage_strategy: retrieval
+    refresh:
+      cadence: monthly
+      notes: Underlying detail revises with each monthly PCE release and comprehensive updates.
+    semantics:
+      granularity: detailed product line (LineNumber, SeriesCode) by month
+      basis: current-dollar expenditure
+      notes: Year=X returns the full history and is a large response; restrict Year for incremental pulls.
+    tools: [get_series]
+    caveats:
+      - id: bea.saar_units
+        severity: critical
+        message: Monthly PCE levels are seasonally adjusted annual rates. Divide by twelve for a monthly-flow reading; fiscus returns the source values without transforming them.
+        source_note: BEA annual-rate convention multiplies monthly activity by twelve.
+      - id: bea.saar_unit_mixing
+        severity: critical
+        message: Do not mix this SAAR series with not-annualized amounts without an explicit unit conversion.
+        when:
+          match: all
+          predicates:
+            - type: unit_mixing
+              with_unit_classes: [usd_millions_nsa, usd_not_saar, usd_billions_nsa]
+      - id: bea.datavalue_commas
+        severity: critical
+        message: DataValue strings contain comma thousands separators; strip commas before numeric parsing.
+      - id: bea.underlying_detail_quality
+        severity: warning
+        message: BEA publishes underlying detail with a quality warning — detailed lines have lower reliability than published aggregates and can revise sharply. Pin the retrieval vintage for weight-construction uses.

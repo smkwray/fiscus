@@ -1,0 +1,54 @@
+schema_version: 1
+family: sffed
+entries:
+  - id: sffed.monetary_policy_surprises
+    family: sffed
+    title: SF Fed monetary policy surprises dataset (workbook)
+    description: San Francisco Fed research dataset of high-frequency monetary-policy surprise measures around FOMC announcements, published as an XLSX workbook.
+    publisher: Federal Reserve Bank of San Francisco
+    aliases:
+      - monetary policy surprises
+      - Bauer-Swanson surprises
+      - FOMC surprise measures
+      - SF Fed surprises
+    tags: [sffed, monetary-policy, surprises, identification, fomc]
+    verified_on: 2026-07-13
+    history:
+      start: 1988-01-31
+      notes: Coverage follows the underlying research sample; verify the sheet range after download.
+    frequency: per FOMC announcement
+    units:
+      label: Surprise measures, column-specific scales
+      scale: mixed
+      seasonal_adjustment: not applicable
+      annualized: false
+      unit_class: mixed_fields
+    endpoint:
+      url: https://www.frbsf.org/wp-content/uploads/monetary-policy-surprises-data.xlsx
+      default_params: {}
+      allowed_params: []
+    access:
+      executor: file
+      mode: machine
+      auth:
+        mode: none
+    response:
+      format: binary
+      pagination:
+        kind: none
+      vintage_strategy: http_last_modified_or_retrieval
+    refresh:
+      cadence: per FOMC meeting
+      notes: The page appends a cache-busting query string to the link, but this base URL serves the current file.
+    semantics:
+      granularity: FOMC announcement events
+      basis: high-frequency asset-price responses, orthogonalized variants included
+      notes: Research identification input, not outcome data.
+    tools: [get_file]
+    caveats:
+      - id: sffed.identification_input_only
+        severity: critical
+        message: These are identification instruments for monetary-policy shocks, not policy outcomes or rate data. Using surprises as a dependent variable or descriptive rate series is a category error.
+      - id: sffed.dataset_revisions
+        severity: warning
+        message: The file is replaced in place as meetings are added and methods refined; there is no upstream vintage archive, so pin the retrieved file's hash for any published estimate.

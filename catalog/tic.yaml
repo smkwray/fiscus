@@ -1,0 +1,57 @@
+schema_version: 1
+family: tic
+entries:
+  - id: tic.net_purchases_bonds_notes
+    family: tic
+    title: TIC net foreign purchases of U.S. Treasury bonds and notes (tressect.txt)
+    description: Monthly net purchases of U.S. Treasury bonds and notes by major foreign sector, published as a fixed-width text report in the TIC data center.
+    publisher: U.S. Department of the Treasury, Treasury International Capital System
+    aliases:
+      - tressect
+      - TIC net purchases
+      - foreign Treasury purchases
+      - TIC bonds and notes
+    tags: [tic, foreign, treasury, flows, monthly]
+    verified_on: 2026-07-13
+    history:
+      start: 1978-01-31
+      notes: Sibling-project parsing of this report covers 1978-01 onward; the report is periodically restated in full.
+    frequency: monthly
+    units:
+      label: Millions of dollars, net purchases
+      scale: millions
+      seasonal_adjustment: not seasonally adjusted
+      annualized: false
+      unit_class: usd_millions_nsa
+    endpoint:
+      url: https://ticdata.treasury.gov/resource-center/data-chart-center/tic/Documents/tressect.txt
+      default_params: {}
+      allowed_params: []
+    access:
+      executor: file
+      mode: machine
+      auth:
+        mode: none
+    response:
+      format: binary
+      pagination:
+        kind: none
+      vintage_strategy: http_last_modified_or_retrieval
+    refresh:
+      cadence: monthly
+      notes: Updated with each monthly TIC release, around the middle of the second following month.
+    semantics:
+      granularity: month by major foreign sector
+      basis: reported cross-border transactions in long-term Treasury bonds and notes
+      notes: Fixed-width report text with header blocks, not a delimited table; parse locally.
+    tools: [get_file]
+    caveats:
+      - id: tic.fixed_width_report
+        severity: critical
+        message: This file is a formatted fixed-width report with title and header blocks, not machine-friendly CSV. Column positions must be parsed locally and can shift when Treasury reformats the report.
+      - id: tic.legacy_vs_slt_seam
+        severity: critical
+        message: Legacy long-term TIC transactions and the expanded SLT total-Treasury holdings series are different source concepts with a regime seam at February 2023. Never pool them as one series across the seam; label the regime of every observation.
+      - id: tic.custodial_bias
+        severity: warning
+        message: TIC attributes positions to the country of the reporting custodian, not the beneficial owner; custodial-center totals overstate those countries' ownership.

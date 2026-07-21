@@ -1,0 +1,61 @@
+schema_version: 1
+family: soma
+entries:
+  - id: soma.treasury_holdings
+    family: soma
+    title: System Open Market Account Treasury holdings
+    description: CUSIP-level domestic Treasury securities held in the Federal Reserve System Open Market Account.
+    publisher: Federal Reserve Bank of New York
+    aliases:
+      - SOMA Treasury holdings
+      - Fed Treasury holdings by CUSIP
+      - System Open Market Account holdings
+      - NY Fed SOMA API
+    tags: [soma, federal-reserve, treasury, holdings, cusip]
+    verified_on: 2026-07-13
+    history:
+      start: 2003-07-02
+      notes: Historical domestic holdings are available from July 2003 onward.
+    frequency: weekly snapshot
+    units:
+      label: U.S. dollars of par value, field-specific
+      scale: dollars
+      seasonal_adjustment: not applicable
+      annualized: false
+      unit_class: usd_par_value
+    endpoint:
+      url: https://markets.newyorkfed.org/api/soma/tsy/get/all/asof/
+      path_template: "{asof}.json"
+      default_params: {}
+      allowed_params: []
+    access:
+      executor: soma
+      mode: machine
+      auth:
+        mode: none
+    response:
+      format: json
+      data_path: soma.holdings
+      date_fields: [asOfDate, maturityDate]
+      value_fields: [parValue]
+      pagination:
+        kind: none
+      vintage_strategy: release_date
+    refresh:
+      cadence: weekly
+      notes: Usually published Thursday for the prior Wednesday snapshot.
+    semantics:
+      granularity: as-of date and CUSIP
+      basis: par-value security holding
+      notes: Phase-2 executor appends an ISO as-of date and .json to the endpoint base.
+    tools: [soma_holdings]
+    caveats:
+      - id: soma.weekly_snapshot
+        severity: warning
+        message: SOMA holdings are weekly snapshots, not daily positions or transaction records. Changes between snapshots do not identify individual purchases, sales, or maturities without reconciliation.
+      - id: soma.tips_par_value
+        severity: warning
+        message: TIPS par-value fields do not by themselves represent accrued inflation compensation; preserve security type and the source fields needed for valuation.
+      - id: soma.history_start
+        severity: critical
+        message: The CUSIP-level historical holdings surface begins in July 2003; do not imply full-security coverage before that boundary.

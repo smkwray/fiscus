@@ -1,0 +1,270 @@
+schema_version: 1
+family: fred
+entries:
+  - id: fred.wtregen
+    family: fred
+    title: U.S. Treasury General Account — week average
+    description: H.4.1 weekly average of Treasury deposits at Federal Reserve Banks other than reserve balances.
+    publisher: Board of Governors of the Federal Reserve System, distributed by FRED
+    aliases:
+      - WTREGEN
+      - Treasury General Account week average
+      - TGA weekly average
+      - H.4.1 Treasury deposits week average
+    tags: [treasury, tga, h41, cash, deposits]
+    verified_on: 2026-07-13
+    history:
+      start: 2002-12-18
+      notes: FRED public series boundary.
+    frequency: weekly, ending Wednesday
+    units:
+      label: Millions of U.S. dollars
+      scale: millions
+      seasonal_adjustment: not seasonally adjusted
+      annualized: false
+      unit_class: usd_millions_nsa
+    endpoint:
+      url: https://fred.stlouisfed.org/graph/fredgraph.csv
+      api_url: https://api.stlouisfed.org/fred/series/observations
+      series_id: WTREGEN
+      default_params: {}
+      allowed_params: []
+    access:
+      executor: fred
+      mode: machine
+      auth:
+        mode: optional
+        env_var: FRED_API_KEY
+        note: Without a key, the executor uses the public FRED graph CSV path.
+    response:
+      format: csv
+      date_fields: [date]
+      value_fields: [value]
+      pagination:
+        kind: none
+      vintage_strategy: fred_realtime_or_http
+    refresh:
+      cadence: weekly
+      notes: Usually updated after the Thursday H.4.1 release.
+    semantics:
+      granularity: weekly average
+      basis: balance-sheet level
+      notes: Average over the statement week ending Wednesday.
+    tools: [get_series]
+    caveats:
+      - id: fred.missing_value_dot
+        severity: info
+        message: "FRED CSV observations mark missing values (holidays, unpublished periods) with a bare period character; filter these rows before numeric parsing."
+      - id: fred.wtregen.week_average
+        severity: critical
+        message: WTREGEN is a week average, not the Wednesday point-in-time TGA level. Use fred.wdtgal when a Wednesday snapshot is required.
+        source_note: H.4.1 Table 1 week-average concept.
+      - id: fred.wtregen.historical_scope
+        severity: warning
+        message: This Federal Reserve deposit series should not silently replace the broader Z.1 Treasury operating-cash concept in periods when Treasury Tax and Loan balances were material.
+        source_note: Historical Treasury operating cash can extend beyond the Federal Reserve deposit balance.
+
+  - id: fred.wdtgal
+    family: fred
+    title: U.S. Treasury General Account — Wednesday level
+    description: H.4.1 Wednesday point-in-time level of Treasury deposits at Federal Reserve Banks other than reserve balances.
+    publisher: Board of Governors of the Federal Reserve System, distributed by FRED
+    aliases:
+      - WDTGAL
+      - Treasury General Account Wednesday level
+      - TGA Wednesday snapshot
+      - H.4.1 Treasury deposits Wednesday level
+    tags: [treasury, tga, h41, cash, deposits]
+    verified_on: 2026-07-13
+    history:
+      start: 2002-12-18
+      notes: FRED public series boundary.
+    frequency: weekly, as of Wednesday
+    units:
+      label: Millions of U.S. dollars
+      scale: millions
+      seasonal_adjustment: not seasonally adjusted
+      annualized: false
+      unit_class: usd_millions_nsa
+    endpoint:
+      url: https://fred.stlouisfed.org/graph/fredgraph.csv
+      api_url: https://api.stlouisfed.org/fred/series/observations
+      series_id: WDTGAL
+      default_params: {}
+      allowed_params: []
+    access:
+      executor: fred
+      mode: machine
+      auth:
+        mode: optional
+        env_var: FRED_API_KEY
+        note: Without a key, the executor uses the public FRED graph CSV path.
+    response:
+      format: csv
+      date_fields: [date]
+      value_fields: [value]
+      pagination:
+        kind: none
+      vintage_strategy: fred_realtime_or_http
+    refresh:
+      cadence: weekly
+      notes: Usually updated after the Thursday H.4.1 release.
+    semantics:
+      granularity: Wednesday snapshot
+      basis: balance-sheet level
+      notes: Point-in-time balance as of Wednesday.
+    tools: [get_series]
+    caveats:
+      - id: fred.missing_value_dot
+        severity: info
+        message: "FRED CSV observations mark missing values (holidays, unpublished periods) with a bare period character; filter these rows before numeric parsing."
+      - id: fred.wdtgal.wednesday_level
+        severity: critical
+        message: WDTGAL is the Wednesday point-in-time level, not the H.4.1 week average. Use fred.wtregen for the weekly-average concept.
+        source_note: H.4.1 Wednesday-level concept.
+      - id: fred.wdtgal.historical_scope
+        severity: warning
+        message: This Federal Reserve deposit series should not silently replace the broader Z.1 Treasury operating-cash concept in periods when Treasury Tax and Loan balances were material.
+        source_note: Historical Treasury operating cash can extend beyond the Federal Reserve deposit balance.
+
+  - id: fred.dpsacbw027sbog
+    family: fred
+    title: Deposits at all commercial banks
+    description: H.8 seasonally adjusted weekly deposits at all commercial banks.
+    publisher: Board of Governors of the Federal Reserve System, distributed by FRED
+    aliases:
+      - DPSACBW027SBOG
+      - H.8 commercial bank deposits
+      - all commercial bank deposits
+    tags: [banking, deposits, h8, commercial-banks]
+    verified_on: 2026-07-13
+    history:
+      start: 1973-01-03
+      notes: FRED public series boundary.
+    frequency: weekly, ending Wednesday
+    units:
+      label: Billions of U.S. dollars
+      scale: billions
+      seasonal_adjustment: seasonally adjusted
+      annualized: false
+      unit_class: usd_billions_sa
+    endpoint:
+      url: https://fred.stlouisfed.org/graph/fredgraph.csv
+      api_url: https://api.stlouisfed.org/fred/series/observations
+      series_id: DPSACBW027SBOG
+      default_params: {}
+      allowed_params: []
+    access:
+      executor: fred
+      mode: machine
+      auth:
+        mode: optional
+        env_var: FRED_API_KEY
+        note: Without a key, the executor uses the public FRED graph CSV path.
+    response:
+      format: csv
+      date_fields: [date]
+      value_fields: [value]
+      pagination:
+        kind: none
+      vintage_strategy: fred_realtime_or_http
+    refresh:
+      cadence: weekly
+      notes: Updated with the H.8 release.
+    semantics:
+      granularity: all commercial banks
+      basis: balance-sheet level
+      notes: Seasonally adjusted bank-deposit stock.
+    tools: [get_series]
+    caveats:
+      - id: fred.missing_value_dot
+        severity: info
+        message: "FRED CSV observations mark missing values (holidays, unpublished periods) with a bare period character; filter these rows before numeric parsing."
+      - id: fred.dpsacbw027sbog.unit_mixing
+        severity: critical
+        message: This series is seasonally adjusted billions. Convert scale and resolve seasonal-adjustment differences before combining it with non-seasonally-adjusted Treasury series in millions.
+        when:
+          match: any
+          predicates:
+            - type: unit_mixing
+              with_unit_classes: [usd_millions_nsa, usd_millions_saar, usd_billions_nsa]
+        source_note: H.8 and Treasury series commonly differ in both scale and seasonal treatment.
+      - id: fred.dpsacbw027sbog.scope
+        severity: warning
+        message: The series is an aggregate stock for all commercial banks; it is not a transaction-flow measure and does not identify the counterparty or cause of a weekly change.
+
+  - id: fred.rrpontsyd
+    family: fred
+    title: Overnight reverse repurchase agreements — Treasury securities sold by the Federal Reserve
+    description: Daily total take-up at the Federal Reserve's overnight reverse repo facility against Treasury collateral, from temporary open market operations.
+    publisher: Federal Reserve Bank of New York, distributed by FRED
+    aliases:
+      - RRPONTSYD
+      - ON RRP
+      - overnight reverse repo
+      - reverse repo take-up
+      - RRP facility usage
+    tags: [rrp, reverse-repo, federal-reserve, money-market, plumbing]
+    verified_on: 2026-07-13
+    history:
+      start: 2003-02-07
+      notes: FRED public series boundary; the standing ON RRP facility design dates to 2013, earlier observations reflect older temporary operations.
+    frequency: daily, business days
+    units:
+      label: Billions of U.S. dollars
+      scale: billions
+      seasonal_adjustment: not seasonally adjusted
+      annualized: false
+      unit_class: usd_billions_nsa
+    endpoint:
+      url: https://fred.stlouisfed.org/graph/fredgraph.csv
+      api_url: https://api.stlouisfed.org/fred/series/observations
+      series_id: RRPONTSYD
+      default_params: {}
+      allowed_params: []
+    access:
+      executor: fred
+      mode: machine
+      auth:
+        mode: optional
+        env_var: FRED_API_KEY
+        note: Without a key, the executor uses the public FRED graph CSV path.
+    response:
+      format: csv
+      date_fields: [date]
+      value_fields: [value]
+      pagination:
+        kind: none
+      vintage_strategy: fred_realtime_or_http
+    refresh:
+      cadence: daily
+      notes: Posted each business day afternoon for that day's operation.
+    semantics:
+      granularity: facility total per operation day
+      basis: par value of Treasury securities sold under overnight reverse repos
+      notes: Temporary open market operations only; the foreign repo pool is a separate liability line.
+    tools: [get_series]
+    caveats:
+      - id: fred.missing_value_dot
+        severity: info
+        message: "FRED CSV observations mark missing values (holidays, unpublished periods) with a bare period character; filter these rows before numeric parsing."
+      - id: fred.rrpontsyd.billions_scale
+        severity: critical
+        message: This series is reported in billions of dollars while most companion balance-sheet series are in millions. Rescale before combining.
+        when:
+          match: all
+          predicates:
+            - type: unit_mixing
+              with_unit_classes: [usd_millions_nsa, usd_not_saar]
+      - id: fred.rrpontsyd.facility_scope
+        severity: warning
+        message: Take-up covers temporary overnight reverse repos with eligible counterparties only; it excludes the foreign official repo pool, which is a separate H.4.1 line.
+      - id: fred.rrpontsyd.regime_break
+        severity: warning
+        message: Observations before the 2013 standing-facility design reflect occasional temporary operations, not a comparable facility regime; do not treat the full history as one policy instrument.
+        when:
+          match: all
+          predicates:
+            - type: date_range_intersects
+              start: 2003-02-07
+              end: 2013-09-22

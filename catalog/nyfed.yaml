@@ -1,0 +1,64 @@
+schema_version: 1
+family: nyfed
+entries:
+  - id: nyfed.secured_reference_rates
+    family: nyfed
+    title: Secured overnight reference rates — SOFR, TGCR, BGCR, and SOFR averages
+    description: Daily secured reference rates and SOFR averages/index from the New York Fed Markets Data API, all types in one feed.
+    publisher: Federal Reserve Bank of New York
+    aliases:
+      - SOFR
+      - TGCR
+      - BGCR
+      - secured reference rates
+      - repo reference rates
+      - SOFR averages
+    tags: [nyfed, sofr, repo, rates, daily]
+    verified_on: 2026-07-13
+    history:
+      start: 2018-04-02
+      notes: SOFR, TGCR, and BGCR were first published for April 2, 2018.
+    frequency: daily, business days
+    units:
+      label: Percent per annum, field-specific
+      scale: percent
+      seasonal_adjustment: not applicable
+      annualized: true
+      unit_class: percent_rate
+    endpoint:
+      url: https://markets.newyorkfed.org/api/rates/secured/all/search.json
+      default_params: {}
+      allowed_params: []
+      start_param: startDate
+      end_param: endDate
+    access:
+      executor: json_api
+      mode: machine
+      auth:
+        mode: none
+    response:
+      format: json
+      data_path: refRates
+      date_fields: [effectiveDate]
+      value_fields: [percentRate]
+      pagination:
+        kind: none
+      vintage_strategy: http_last_modified_or_retrieval
+    refresh:
+      cadence: daily
+      notes: Published each business morning for the prior business day; revisions are flagged.
+    semantics:
+      granularity: one row per rate type per effective date
+      basis: transaction-weighted repo rates
+      notes: Rows mix types (SOFR, TGCR, BGCR, SOFRAI averages/index) with type-specific fields; filter by the type column first.
+    tools: [get_series]
+    caveats:
+      - id: nyfed.mixed_rate_types
+        severity: critical
+        message: The feed interleaves SOFR, TGCR, BGCR, and SOFR-average/index rows with different populated fields. Filter on the type column before any computation; averaging across rows of mixed types is meaningless.
+      - id: nyfed.bgcr_not_gcf
+        severity: warning
+        message: BGCR is a broad general-collateral rate that includes GCF trades; it is not a GCF-only rate. Do not label it as the GCF repo rate.
+      - id: nyfed.percentile_fields
+        severity: info
+        message: Rate rows carry distribution fields (1st/25th/75th/99th percentiles) and volume on the full API; the search feed returns a reduced field set that differs by type.

@@ -1,0 +1,17 @@
+{
+  "data": [
+    {
+      "record_date": "2022-04-04",
+      "account_type": "Federal Reserve Account",
+      "close_today_bal": "660000"
+    }
+  ],
+  "meta": {
+    "count": 1,
+    "total-count": 3,
+    "total-pages": 2
+  },
+  "links": {
+    "next": null
+  }
+}

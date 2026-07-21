@@ -1,0 +1,179 @@
+schema_version: 1
+family: ofr
+entries:
+  - id: ofr.mmf_total_assets
+    family: ofr
+    title: Money market mutual fund investments — total
+    description: Total money market mutual fund investments from the OFR Short-Term Funding Monitor, monthly.
+    publisher: Office of Financial Research
+    aliases:
+      - MMF-MMF_TOT-M
+      - MMF total assets
+      - money fund total
+      - STFM MMF total
+    tags: [ofr, stfm, mmf, money-funds, monthly]
+    verified_on: 2026-07-13
+    history:
+      start: 2010-11-30
+      notes: First observation verified via the API.
+    frequency: monthly
+    units:
+      label: U.S. dollars
+      scale: dollars
+      seasonal_adjustment: not seasonally adjusted
+      annualized: false
+      unit_class: usd_not_saar
+    endpoint:
+      url: https://data.financialresearch.gov/v1/series/timeseries
+      default_params:
+        mnemonic: MMF-MMF_TOT-M
+      allowed_params: []
+      start_param: start_date
+      end_param: end_date
+    access:
+      executor: json_api
+      mode: machine
+      auth:
+        mode: none
+    response:
+      format: json
+      data_path: "."
+      date_fields: [date]
+      value_fields: [value]
+      pagination:
+        kind: none
+      vintage_strategy: http_last_modified_or_retrieval
+    refresh:
+      cadence: monthly
+      notes: Sourced from SEC Form N-MFP filings; the full series can revise monthly.
+    semantics:
+      granularity: aggregate across registered money market funds
+      basis: reported investment holdings
+      notes: Values are exact dollars, not millions or billions.
+    tools: [get_series]
+    caveats:
+      - id: ofr.full_series_revisions
+        severity: warning
+        message: OFR republishes the complete series with each monthly update; past observations can change. Pin the retrieval vintage when reproducibility matters.
+      - id: ofr.dollar_scale
+        severity: warning
+        message: Values are exact dollars (around 8e12 for recent totals). Most companion series are in millions or billions; rescale before combining.
+        when:
+          match: all
+          predicates:
+            - type: unit_mixing
+              with_unit_classes: [usd_millions_nsa, usd_billions_nsa]
+
+  - id: ofr.mmf_treasury_holdings
+    family: ofr
+    title: Money market mutual fund investments in U.S. Treasury securities
+    description: Money market mutual fund holdings of U.S. Treasury securities from the OFR Short-Term Funding Monitor, monthly.
+    publisher: Office of Financial Research
+    aliases:
+      - MMF-MMF_T_TOT-M
+      - MMF Treasury holdings
+      - money fund Treasuries
+    tags: [ofr, stfm, mmf, treasury, holdings, monthly]
+    verified_on: 2026-07-13
+    history:
+      start: 2010-11-30
+      notes: First observation verified via the API.
+    frequency: monthly
+    units:
+      label: U.S. dollars
+      scale: dollars
+      seasonal_adjustment: not seasonally adjusted
+      annualized: false
+      unit_class: usd_not_saar
+    endpoint:
+      url: https://data.financialresearch.gov/v1/series/timeseries
+      default_params:
+        mnemonic: MMF-MMF_T_TOT-M
+      allowed_params: []
+      start_param: start_date
+      end_param: end_date
+    access:
+      executor: json_api
+      mode: machine
+      auth:
+        mode: none
+    response:
+      format: json
+      data_path: "."
+      date_fields: [date]
+      value_fields: [value]
+      pagination:
+        kind: none
+      vintage_strategy: http_last_modified_or_retrieval
+    refresh:
+      cadence: monthly
+      notes: Sourced from SEC Form N-MFP filings; the full series can revise monthly.
+    semantics:
+      granularity: aggregate across registered money market funds
+      basis: reported investment holdings
+      notes: Direct Treasury holdings only; Treasury-collateralized repo is the separate repo series.
+    tools: [get_series]
+    caveats:
+      - id: ofr.treasury_excludes_repo
+        severity: critical
+        message: This series is direct Treasury-security holdings and excludes Treasury-backed repurchase agreements. Total money-fund Treasury exposure requires adding the repo series explicitly.
+      - id: ofr.full_series_revisions
+        severity: warning
+        message: OFR republishes the complete series with each monthly update; past observations can change. Pin the retrieval vintage when reproducibility matters.
+
+  - id: ofr.mmf_repo_holdings
+    family: ofr
+    title: Money market mutual fund investments in repurchase agreements
+    description: Money market mutual fund repo investments from the OFR Short-Term Funding Monitor, monthly.
+    publisher: Office of Financial Research
+    aliases:
+      - MMF-MMF_RP_TOT-M
+      - MMF repo
+      - money fund repurchase agreements
+    tags: [ofr, stfm, mmf, repo, monthly]
+    verified_on: 2026-07-13
+    history:
+      start: 2010-11-30
+      notes: First observation verified via the API.
+    frequency: monthly
+    units:
+      label: U.S. dollars
+      scale: dollars
+      seasonal_adjustment: not seasonally adjusted
+      annualized: false
+      unit_class: usd_not_saar
+    endpoint:
+      url: https://data.financialresearch.gov/v1/series/timeseries
+      default_params:
+        mnemonic: MMF-MMF_RP_TOT-M
+      allowed_params: []
+      start_param: start_date
+      end_param: end_date
+    access:
+      executor: json_api
+      mode: machine
+      auth:
+        mode: none
+    response:
+      format: json
+      data_path: "."
+      date_fields: [date]
+      value_fields: [value]
+      pagination:
+        kind: none
+      vintage_strategy: http_last_modified_or_retrieval
+    refresh:
+      cadence: monthly
+      notes: Sourced from SEC Form N-MFP filings; the full series can revise monthly.
+    semantics:
+      granularity: aggregate across registered money market funds
+      basis: reported investment holdings
+      notes: All repo collateral types combined; Fed ON RRP exposure is a component, not the whole.
+    tools: [get_series]
+    caveats:
+      - id: ofr.repo_includes_all_counterparties
+        severity: warning
+        message: Repo investments span Federal Reserve, dealer, and other counterparties and all collateral types. Do not read this series as ON RRP take-up; use the RRP facility series for that.
+      - id: ofr.full_series_revisions
+        severity: warning
+        message: OFR republishes the complete series with each monthly update; past observations can change. Pin the retrieval vintage when reproducibility matters.

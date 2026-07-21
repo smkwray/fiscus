@@ -1,0 +1,395 @@
+schema_version: 1
+family: fiscaldata
+entries:
+  - id: fiscaldata.dts_operating_cash_balance
+    family: fiscaldata
+    title: Daily Treasury Statement operating cash balance
+    description: Daily operating cash balances reported in the Daily Treasury Statement, including Federal Reserve and Treasury Tax and Loan account detail.
+    publisher: U.S. Department of the Treasury, Bureau of the Fiscal Service
+    aliases:
+      - DTS operating cash balance
+      - Treasury operating cash balance
+      - Daily Treasury Statement TGA
+      - operating_cash_balance
+    tags: [treasury, dts, cash, tga, daily]
+    verified_on: 2026-07-13
+    history:
+      start: 2005-10-03
+      notes: Machine-readable FiscalData history; inspect account_type when constructing a concept.
+    frequency: daily business day
+    units:
+      label: Millions of U.S. dollars, field-specific
+      scale: millions
+      seasonal_adjustment: not seasonally adjusted
+      annualized: false
+      unit_class: usd_millions_nsa
+    endpoint:
+      url: https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/dts/operating_cash_balance
+      default_params:
+        format: json
+        sort: record_date,account_type
+        "page[size]": "100"
+      allowed_params: [fields, filter, sort, "page[size]"]
+    access:
+      executor: fiscaldata
+      mode: machine
+      auth:
+        mode: none
+    response:
+      format: json
+      data_path: data
+      date_fields: [record_date]
+      value_fields: [open_today_bal, close_today_bal, open_month_bal]
+      pagination:
+        kind: fiscaldata
+        default_page_size: 100
+        hard_max_pages: 100
+      vintage_strategy: http_last_modified_or_retrieval
+    refresh:
+      cadence: daily
+      notes: Published on Treasury business days.
+    semantics:
+      granularity: date and account type
+      basis: Daily Treasury Statement cash balance
+      notes: Filter account_type explicitly for Federal Reserve versus Treasury Tax and Loan balances.
+    tools: [fiscaldata_query]
+    caveats:
+      - id: fiscaldata.dts.schema_seam_2022_04
+        severity: critical
+        message: The DTS operating-cash schema changes around April 2022. A request crossing that boundary must be checked for both-era rows; parsers built only for the newer shape can silently truncate history.
+        when:
+          predicates:
+            - type: date_range_crosses
+              boundary: 2022-04-01
+        source_note: Known machine-readable DTS history seam.
+      - id: fiscaldata.dts.account_type
+        severity: critical
+        message: Do not sum or select rows without inspecting account_type. Federal Reserve and Treasury Tax and Loan balances represent distinct locations and can coexist.
+      - id: fiscaldata.dts.not_z1_replacement
+        severity: warning
+        message: DTS and H.4.1 TGA measures are diagnostics, not automatic replacements for the broader historical Z.1 Treasury operating-cash concept.
+      - id: fiscaldata.dts.value_column_by_era
+        severity: critical
+        message: "Since the April 2022 schema change, every row's value is in open_today_bal and close_today_bal is the literal string null — select the concept via account_type (for example Treasury General Account (TGA) Closing Balance) and read open_today_bal. Before April 2022, account_type names accounts (for example Federal Reserve Account) and open_today_bal/close_today_bal are genuine opening and closing balances."
+
+  - id: fiscaldata.auctions_query
+    family: fiscaldata
+    title: Treasury securities auctions query
+    description: Auction-level Treasury security records, including announced, auction, issue, and maturity dates and offering results.
+    publisher: U.S. Department of the Treasury, Bureau of the Fiscal Service
+    aliases:
+      - auctions_query
+      - Treasury auction results
+      - Treasury issuance auctions
+      - bill note bond auctions
+    tags: [treasury, auctions, issuance, securities]
+    verified_on: 2026-07-13
+    history:
+      start: 1979-11-01
+      notes: Endpoint history varies by field and security type; use filters for reproducible pulls.
+    frequency: event
+    units:
+      label: Field-specific; monetary fields are U.S. dollars
+      scale: field-specific
+      seasonal_adjustment: not applicable
+      annualized: false
+      unit_class: field_specific_not_saar
+    endpoint:
+      url: https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/auctions_query
+      default_params:
+        format: json
+        sort: auction_date,cusip
+        "page[size]": "100"
+      allowed_params: [fields, filter, sort, "page[size]"]
+    access:
+      executor: fiscaldata
+      mode: machine
+      auth:
+        mode: none
+    response:
+      format: json
+      data_path: data
+      date_fields: [auction_date, issue_date, maturity_date, announcement_date]
+      value_fields: [offering_amt, total_accepted, total_tendered]
+      pagination:
+        kind: fiscaldata
+        default_page_size: 100
+        hard_max_pages: 100
+      vintage_strategy: http_last_modified_or_retrieval
+    refresh:
+      cadence: event-driven
+      notes: Refresh after announced and completed auctions.
+    semantics:
+      granularity: auction and CUSIP
+      basis: primary-market auction result
+      notes: Auction, issue, and maturity dates are different clocks.
+    tools: [fiscaldata_query]
+    caveats:
+      - id: fiscaldata.auctions.date_semantics
+        severity: warning
+        message: Choose the correct event date. auction_date, issue_date, announcement_date, and maturity_date are not interchangeable.
+      - id: fiscaldata.auctions.primary_market
+        severity: warning
+        message: Auction allotments describe primary issuance, not the final secondary-market holder distribution.
+
+  - id: fiscaldata.mspd_table_3_market
+    family: fiscaldata
+    title: Monthly Statement of the Public Debt — Table 3 marketable securities
+    description: CUSIP-level marketable Treasury security detail from MSPD Table 3.
+    publisher: U.S. Department of the Treasury, Bureau of the Fiscal Service
+    aliases:
+      - MSPD Table 3
+      - mspd_table_3_market
+      - marketable Treasury CUSIP detail
+      - Monthly Statement Public Debt marketable
+    tags: [treasury, mspd, debt, cusip, marketable]
+    verified_on: 2026-07-13
+    history:
+      start: 2001-01-31
+      notes: Machine-readable CUSIP-level detail begins in January 2001.
+    frequency: monthly
+    units:
+      label: Field-specific; monetary fields are U.S. dollars
+      scale: field-specific
+      seasonal_adjustment: not applicable
+      annualized: false
+      unit_class: field_specific_not_saar
+    endpoint:
+      url: https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/debt/mspd/mspd_table_3_market
+      default_params:
+        format: json
+        sort: record_date,security_class1_desc,security_class2_desc
+        "page[size]": "100"
+      allowed_params: [fields, filter, sort, "page[size]"]
+    access:
+      executor: fiscaldata
+      mode: machine
+      auth:
+        mode: none
+    response:
+      format: json
+      data_path: data
+      date_fields: [record_date, maturity_date]
+      value_fields: [outstanding_amt, yield_pct, interest_rate_pct]
+      pagination:
+        kind: fiscaldata
+        default_page_size: 100
+        hard_max_pages: 100
+      vintage_strategy: http_last_modified_or_retrieval
+    refresh:
+      cadence: monthly
+      notes: Refresh after each MSPD release.
+    semantics:
+      granularity: reporting month and marketable security
+      basis: par-value debt outstanding detail
+      notes: Security descriptors carry identifiers and type detail.
+    tools: [fiscaldata_query]
+    caveats:
+      - id: fiscaldata.mspd_table_3.history_start
+        severity: critical
+        message: Machine-readable MSPD Table 3 marketable-security detail starts in January 2001; do not imply CUSIP-level coverage before that boundary.
+      - id: fiscaldata.mspd_table_3.cusip_location
+        severity: critical
+        message: The CUSIP is stored in security_class2_desc rather than a clean field named cusip. Preserve and parse that field explicitly.
+      - id: fiscaldata.mspd_table_3.monthly_snapshot
+        severity: warning
+        message: Each record_date is a monthly stock snapshot. Changes between snapshots are not equivalent to auction issuance or transaction flows without reconciliation.
+      - id: fiscaldata.mspd3.classification_fields
+        severity: critical
+        message: "All rows carry security_type_desc = Marketable; the instrument class lives in security_class1_desc with values such as Bills Maturity Value, Notes, Bonds, Inflation-Protected Securities, Floating Rate Notes, and Federal Financing Bank. Filtering security_type_desc for an instrument name silently returns zero rows."
+      - id: fiscaldata.mspd3.row_quirks
+        severity: warning
+        message: "Securities can appear as multiple rows (reopenings) with outstanding_amt null on all but one; the table embeds Total subtotal rows and occasional * placeholder values. Filter and de-duplicate before summing, then verify against the embedded Total rows."
+
+  - id: fiscaldata.interest_expense
+    family: fiscaldata
+    title: Interest expense on the public debt outstanding
+    description: Monthly Treasury interest-expense components by security class, security type, and expense category.
+    publisher: U.S. Department of the Treasury, Bureau of the Fiscal Service
+    aliases:
+      - interest_expense
+      - Interest Expense on the Public Debt Outstanding
+      - Treasury public debt interest expense
+      - Treasury bill amortized discount
+    tags: [treasury, interest, expense, debt, fiscaldata]
+    verified_on: 2026-07-13
+    history:
+      start: 2010-05-31
+      notes: Machine-readable dataset boundary.
+    frequency: monthly
+    units:
+      label: U.S. dollars, field-specific
+      scale: dollars
+      seasonal_adjustment: not seasonally adjusted
+      annualized: false
+      unit_class: usd_not_saar
+    endpoint:
+      url: https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v2/accounting/od/interest_expense
+      default_params:
+        format: json
+        sort: record_date,expense_category_desc,security_type_desc
+        "page[size]": "100"
+      allowed_params: [fields, filter, sort, "page[size]"]
+    access:
+      executor: fiscaldata
+      mode: machine
+      auth:
+        mode: none
+    response:
+      format: json
+      data_path: data
+      date_fields: [record_date]
+      value_fields: [month_expense_amt, fytd_expense_amt]
+      pagination:
+        kind: fiscaldata
+        default_page_size: 100
+        hard_max_pages: 100
+      vintage_strategy: http_last_modified_or_retrieval
+    refresh:
+      cadence: monthly
+      notes: Usually refreshed near the fourth business day.
+    semantics:
+      granularity: expense category, security group, and security type
+      basis: modified accrual for public issues; cash for most Government Account Series
+      notes: There is no direct marketable flag; classification must use the security descriptors.
+    tools: [fiscaldata_query]
+    caveats:
+      - id: fiscaldata.interest_expense.mts_overlap
+        severity: critical
+        message: This dataset overlaps the Monthly Treasury Statement gross-interest concept. Do not add the two as independent expenses without an explicit reconciliation, or interest will be double-counted.
+      - id: fiscaldata.interest_expense.classification
+        severity: warning
+        message: The endpoint has no direct marketable-security flag. Infer scope from expense_category_desc, security_class_desc, and security_type_desc, and retain those labels.
+      - id: fiscaldata.interest_expense.accounting_basis
+        severity: warning
+        message: "Accounting treatment is not uniform across categories: public issues are generally modified accrual while most Government Account Series are cash basis."
+
+  - id: fiscaldata.mts_table_1
+    family: fiscaldata
+    title: Monthly Treasury Statement Table 1 — summary receipts, outlays, and deficit
+    description: MTS Table 1 summary of federal government receipts, outlays, and the deficit or surplus, by month with fiscal-year-to-date columns.
+    publisher: U.S. Department of the Treasury, Bureau of the Fiscal Service
+    aliases:
+      - mts_table_1
+      - Monthly Treasury Statement
+      - MTS summary
+      - federal receipts and outlays monthly
+      - monthly deficit
+    tags: [treasury, mts, receipts, outlays, deficit, fiscaldata]
+    verified_on: 2026-07-13
+    history:
+      start: 2015-03-31
+      notes: Earliest API record_date observed 2015-03-31; earlier Monthly Treasury Statements exist only as published PDF documents.
+    frequency: monthly
+    units:
+      label: U.S. dollars, field-specific
+      scale: dollars
+      seasonal_adjustment: not seasonally adjusted
+      annualized: false
+      unit_class: usd_not_saar
+    endpoint:
+      url: https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/mts/mts_table_1
+      default_params:
+        format: json
+        sort: record_date,src_line_nbr
+        "page[size]": "100"
+      allowed_params: [fields, filter, sort, "page[size]"]
+    access:
+      executor: fiscaldata
+      mode: machine
+      auth:
+        mode: none
+    response:
+      format: json
+      data_path: data
+      date_fields: [record_date]
+      value_fields: [current_month_gross_rcpt_amt, current_month_gross_outly_amt, current_month_dfct_sur_amt]
+      pagination:
+        kind: fiscaldata
+        default_page_size: 100
+        hard_max_pages: 100
+      vintage_strategy: http_last_modified_or_retrieval
+    refresh:
+      cadence: monthly
+      notes: Published with the Monthly Treasury Statement, usually the eighth business day.
+    semantics:
+      granularity: classification line within the monthly statement
+      basis: cash-basis budget accounting
+      notes: Rows are statement lines identified by classification_desc and src_line_nbr, not one row per month.
+    tools: [fiscaldata_query]
+    caveats:
+      - id: fiscaldata.mts.api_history_boundary
+        severity: critical
+        message: The MTS API carries line-level detail only from March 2015 onward. Earlier months exist solely in published PDF statements; an API request cannot cover them and silently starts at the boundary.
+        when:
+          match: all
+          predicates:
+            - type: date_range_intersects
+              start: 1900-01-01
+              end: 2015-02-28
+      - id: fiscaldata.mts.interest_expense_overlap
+        severity: warning
+        message: MTS outlay lines include gross interest concepts that overlap the separate interest-expense dataset. Do not sum the two sources without reconciliation.
+      - id: fiscaldata.mts.cash_basis
+        severity: warning
+        message: MTS figures are cash-basis budget accounting, not accrual; do not mix silently with accrual concepts such as NIPA federal accounts.
+
+  - id: fiscaldata.avg_interest_rates
+    family: fiscaldata
+    title: Average interest rates on U.S. Treasury securities
+    description: Month-end average interest rates on interest-bearing Treasury debt, by security type and security description.
+    publisher: U.S. Department of the Treasury, Bureau of the Fiscal Service
+    aliases:
+      - avg_interest_rates
+      - average interest rates
+      - Treasury average rate
+      - average coupon
+    tags: [treasury, interest, rates, debt, fiscaldata]
+    verified_on: 2026-07-13
+    history:
+      start: 2001-01-31
+      notes: Earliest API record_date observed 2001-01-31.
+    frequency: monthly
+    units:
+      label: Percent per annum
+      scale: percent
+      seasonal_adjustment: not seasonally adjusted
+      annualized: true
+      unit_class: percent_rate
+    endpoint:
+      url: https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v2/accounting/od/avg_interest_rates
+      default_params:
+        format: json
+        sort: record_date,src_line_nbr
+        "page[size]": "100"
+      allowed_params: [fields, filter, sort, "page[size]"]
+    access:
+      executor: fiscaldata
+      mode: machine
+      auth:
+        mode: none
+    response:
+      format: json
+      data_path: data
+      date_fields: [record_date]
+      value_fields: [avg_interest_rate_amt]
+      pagination:
+        kind: fiscaldata
+        default_page_size: 100
+        hard_max_pages: 100
+      vintage_strategy: http_last_modified_or_retrieval
+    refresh:
+      cadence: monthly
+      notes: Published near the start of the following month.
+    semantics:
+      granularity: security type and security description at month end
+      basis: weighted average rate on interest-bearing debt outstanding
+      notes: Row identity is security_type_desc plus security_desc; totals appear as their own rows.
+    tools: [fiscaldata_query]
+    caveats:
+      - id: fiscaldata.avg_rates.excludes_tips_frn_from_headline
+        severity: critical
+        message: The headline marketable average-rate totals exclude Treasury Inflation-Protected Securities and Floating Rate Notes, which appear as separate rows. Do not present the headline total as the average rate on all marketable debt.
+      - id: fiscaldata.avg_rates.not_marginal_cost
+        severity: warning
+        message: These are averages over outstanding debt, not marginal auction yields; they lag market rates mechanically.
