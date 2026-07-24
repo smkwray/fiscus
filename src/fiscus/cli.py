@@ -8,6 +8,7 @@ from typing import Any
 
 from fiscus.catalog import Catalog, catalog_schema_json
 from fiscus.errors import FiscusError
+from fiscus.models import Z1_KIND_CODES
 from fiscus.service import FiscusService
 
 
@@ -36,6 +37,13 @@ def build_parser() -> argparse.ArgumentParser:
     get_parser.add_argument("dataset_id")
     get_parser.add_argument("--start")
     get_parser.add_argument("--end")
+    get_parser.add_argument(
+        "--vintage-as-of",
+        help=(
+            "Closed past ALFRED information date (YYYY-MM-DD). FRED series only; "
+            "requires FRED_API_KEY."
+        ),
+    )
     get_parser.add_argument("--refresh", action="store_true")
 
     fiscal_parser = subparsers.add_parser(
@@ -76,7 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     z1_parser = subparsers.add_parser(
         "z1-series",
-        help="Fetch a Z.1 series with enforced FL, FU, or LM semantics.",
+        help="Fetch a Z.1 series with enforced official prefix semantics.",
     )
     z1_parser.add_argument(
         "code",
@@ -86,11 +94,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     z1_parser.add_argument(
         "kind",
-        choices=["FL", "FU", "LM", "fl", "fu", "lm"],
+        choices=[*Z1_KIND_CODES, *(kind.lower() for kind in Z1_KIND_CODES)],
         help=(
-            "The concept you intend to use: FL level, FU transaction flow, LM market-value "
-            "level. Must match the series prefix — the deliberate redundancy makes the call "
-            "fail when you are about to misread a level as a flow or vice versa."
+            "The official series-type prefix you intend to use. Must match the mnemonic — "
+            "the deliberate redundancy prevents semantic relabeling."
         ),
     )
     z1_parser.add_argument("--start")
@@ -166,6 +173,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.dataset_id,
                     start=args.start,
                     end=args.end,
+                    vintage_as_of=args.vintage_as_of,
                     refresh=args.refresh,
                 )
             elif args.command == "fiscaldata-query":
@@ -212,7 +220,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         _print_json(result)
         return 0
     except (FiscusError, ValueError) as exc:
-        print(f"fiscus: {exc}", file=sys.stderr)
+        code = getattr(exc, "code", "invalid_request")
+        print(f"fiscus [{code}]: {exc}", file=sys.stderr)
         return 2
 
 

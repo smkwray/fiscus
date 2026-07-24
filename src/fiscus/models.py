@@ -16,7 +16,6 @@ class ExecutorKind(StrEnum):
     FISCALDATA = "fiscaldata"
     Z1 = "z1"
     SOMA = "soma"
-    RELEASE = "release"
     JSON_API = "json_api"
     BLS = "bls"
     FILE = "file"
@@ -41,7 +40,19 @@ class ToolName(StrEnum):
     FISCALDATA_QUERY = "fiscaldata_query"
     Z1_SERIES = "z1_series"
     SOMA_HOLDINGS = "soma_holdings"
-    RELEASE_TABLE = "release_table"
+
+
+EXECUTOR_TOOL = {
+    ExecutorKind.FRED: ToolName.GET_SERIES,
+    ExecutorKind.JSON_API: ToolName.GET_SERIES,
+    ExecutorKind.BLS: ToolName.GET_SERIES,
+    ExecutorKind.FISCALDATA: ToolName.FISCALDATA_QUERY,
+    ExecutorKind.Z1: ToolName.Z1_SERIES,
+    ExecutorKind.SOMA: ToolName.SOMA_HOLDINGS,
+    ExecutorKind.FILE: ToolName.GET_FILE,
+    ExecutorKind.LOCAL_FILE: ToolName.GET_FILE,
+    ExecutorKind.BROWSER_DOWNLOAD: ToolName.GET_FILE,
+}
 
 
 class Severity(StrEnum):
@@ -62,8 +73,13 @@ class ResponseFormat(StrEnum):
 class VintageStrategy(StrEnum):
     FRED_REALTIME_OR_HTTP = "fred_realtime_or_http"
     HTTP_LAST_MODIFIED_OR_RETRIEVAL = "http_last_modified_or_retrieval"
+    LOGICAL_RELEASE_PLUS_SHA256 = "logical_release_plus_sha256"
     RETRIEVAL = "retrieval"
     RELEASE_DATE = "release_date"
+
+
+Z1_KIND_CODES = ("FA", "FC", "FG", "FI", "FL", "FR", "FS", "FU", "FV", "LA", "LM", "PC")
+Z1Kind = Literal[*Z1_KIND_CODES]
 
 
 class AuthSpec(StrictModel):
@@ -155,8 +171,28 @@ class RefreshSpec(StrictModel):
     notes: str | None = None
 
 
+class ReleaseSpec(StrictModel):
+    logical_id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]*$")
+    representation: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]*$")
+    published_on: date | None = None
+    corrected_on: date | None = None
+    discovery_url: HttpUrl
+    layout_url: HttpUrl | None = None
+    errata_url: HttpUrl | None = None
+
+    @model_validator(mode="after")
+    def validate_dates(self) -> ReleaseSpec:
+        if (
+            self.published_on is not None
+            and self.corrected_on is not None
+            and self.corrected_on < self.published_on
+        ):
+            raise ValueError("release corrected_on precedes published_on")
+        return self
+
+
 class SemanticsSpec(StrictModel):
-    kind: Literal["FU", "FL", "LM"] | None = None
+    kind: Z1Kind | None = None
     granularity: str | None = None
     basis: str | None = None
     notes: str | None = None
@@ -196,7 +232,7 @@ class UnitMixingPredicate(StrictModel):
 
 class KindInPredicate(StrictModel):
     type: Literal["kind_in"]
-    kinds: list[Literal["FU", "FL", "LM"]] = Field(min_length=1)
+    kinds: list[Z1Kind] = Field(min_length=1)
 
 
 CaveatPredicate = Annotated[
@@ -249,6 +285,7 @@ class CatalogEntry(StrictModel):
     access: AccessSpec
     response: ResponseSpec
     refresh: RefreshSpec
+    release: ReleaseSpec | None = None
     semantics: SemanticsSpec = Field(default_factory=SemanticsSpec)
     tools: list[ToolName] = Field(min_length=1)
     caveats: list[Caveat] = Field(default_factory=list)
@@ -257,6 +294,12 @@ class CatalogEntry(StrictModel):
     def validate_entry_contract(self) -> CatalogEntry:
         if not self.id.startswith(f"{self.family}."):
             raise ValueError("entry id must begin with '<family>.'")
+        expected_tool = EXECUTOR_TOOL[self.access.executor]
+        if self.tools != [expected_tool]:
+            raise ValueError(
+                f"{self.access.executor.value} entries must declare exactly "
+                f"tools: [{expected_tool.value}]"
+            )
         if self.access.executor == ExecutorKind.FRED:
             if not self.endpoint.series_id:
                 raise ValueError("FRED entries require endpoint.series_id")
@@ -295,13 +338,31 @@ class CatalogEntry(StrictModel):
                 raise ValueError("local_file entries require endpoint.local_path")
         elif not self.endpoint.url:
             raise ValueError("entries require endpoint.url unless the executor is local_file")
+        if self.response.vintage_strategy == VintageStrategy.LOGICAL_RELEASE_PLUS_SHA256:
+            if self.access.executor != ExecutorKind.FILE:
+                raise ValueError(
+                    "logical_release_plus_sha256 is available only to machine file entries"
+                )
+            if self.release is None:
+                raise ValueError(
+                    "logical_release_plus_sha256 entries must declare release metadata"
+                )
+        elif self.release is not None:
+            raise ValueError(
+                "release metadata requires logical_release_plus_sha256 vintage strategy"
+            )
         if (
             self.access.mode == AccessMode.BROWSER_DOWNLOAD_ONLY
             and self.access.executor != ExecutorKind.BROWSER_DOWNLOAD
         ):
             raise ValueError("browser-download-only entries must use browser_download executor")
-        if self.family == "z1" and self.semantics.kind not in {"FU", "FL", "LM"}:
-            raise ValueError("Z.1 entries must declare FU, FL, or LM semantics.kind")
+        if (
+            self.access.executor == ExecutorKind.BROWSER_DOWNLOAD
+            and self.access.mode != AccessMode.BROWSER_DOWNLOAD_ONLY
+        ):
+            raise ValueError("browser_download entries must use browser_download_only mode")
+        if self.family == "z1" and self.semantics.kind is None:
+            raise ValueError("Z.1 entries must declare an official series-prefix semantics.kind")
         return self
 
 

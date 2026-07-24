@@ -14,6 +14,7 @@ from fiscus.http import (
     source_vintage_from_headers,
 )
 from fiscus.models import AuthMode, CatalogEntry
+from fiscus.periods import month_end_iso
 
 JSON_API_POLICY = RetryPolicy(attempts=3, backoff_seconds=0.75, politeness_delay_seconds=0.2)
 
@@ -60,7 +61,14 @@ class JsonApiExecutor:
             request_params[entry.endpoint.api_key_param] = api_key
 
         response = self.requester.get(
-            str(entry.endpoint.url), params=request_params, policy=JSON_API_POLICY
+            str(entry.endpoint.url),
+            params=request_params,
+            policy=JSON_API_POLICY,
+            secret_params=(
+                (entry.endpoint.api_key_param,)
+                if api_key and entry.endpoint.api_key_param
+                else ()
+            ),
         )
         try:
             payload = response.json()
@@ -108,24 +116,16 @@ def bea_period_end(period: str) -> str:
     """BEA TimePeriod (2025Q1, 2025M03, 2025) -> period-end ISO date."""
     token = period.strip().upper()
     quarter_end = {"1": "03-31", "2": "06-30", "3": "09-30", "4": "12-31"}
-    month_end = {
-        "01": "01-31",
-        "02": "02-28",
-        "03": "03-31",
-        "04": "04-30",
-        "05": "05-31",
-        "06": "06-30",
-        "07": "07-31",
-        "08": "08-31",
-        "09": "09-30",
-        "10": "10-31",
-        "11": "11-30",
-        "12": "12-31",
-    }
     if len(token) == 6 and token[4] == "Q" and token[5] in quarter_end:
         return f"{token[:4]}-{quarter_end[token[5]]}"
-    if len(token) == 7 and token[4] == "M" and token[5:] in month_end:
-        return f"{token[:4]}-{month_end[token[5:]]}"
+    if (
+        len(token) == 7
+        and token[4] == "M"
+        and token[:4].isdigit()
+        and token[5:].isdigit()
+        and 1 <= int(token[5:]) <= 12
+    ):
+        return month_end_iso(int(token[:4]), int(token[5:]))
     if len(token) == 4 and token.isdigit():
         return f"{token}-12-31"
     return ""

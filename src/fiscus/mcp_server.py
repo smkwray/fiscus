@@ -1,9 +1,28 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fiscus.service import FiscusService
+
+
+def _issue_reporting_instruction() -> str:
+    for parent in Path(__file__).resolve().parents:
+        state_path = parent / "do" / "state.md"
+        if state_path.is_file():
+            return (
+                "If Fiscus has a reproducible defect, source drift, semantic hazard, or "
+                f"missing capability, record a concise actionable item in {state_path} before "
+                "ending the turn and put detailed evidence under its sibling do/history/ "
+                "directory. Never put credentials or private data there."
+            )
+    return (
+        "If Fiscus has a reproducible defect, source drift, semantic hazard, or missing "
+        "capability, report it explicitly to the owner before ending the turn; when a Fiscus "
+        "checkout is available, record it in that checkout's do/state.md with detailed "
+        "evidence under do/history/. Never include credentials or private data."
+    )
 
 
 def create_server(service: FiscusService | None = None) -> Any:
@@ -27,7 +46,8 @@ def create_server(service: FiscusService | None = None) -> Any:
             "data need instead of writing ad-hoc download code: call find_series first to "
             "get the right dataset id, units, and footguns, then the matching fetch tool. "
             "Cache-backed fetches return an artifact descriptor, never a server filesystem "
-            "path; read exact full bytes from fiscus-cache://artifact/<cache_key>."
+            "path; read exact full bytes from fiscus-cache://artifact/<cache_key>. "
+            + _issue_reporting_instruction()
         ),
         json_response=True,
         log_level="WARNING",
@@ -55,6 +75,7 @@ def create_server(service: FiscusService | None = None) -> Any:
         supported fetch tool, and caveat count so the next call can select the right concept.
         When the catalog has no match, uncurated candidates from the source's own search are
         returned under uncurated_upstream — fetchable, but without curated caveat review.
+        For keyless discovery across the Z.1 package data dictionary, pass family="z1".
         """
         return core.find_series(query, family=family, limit=limit)
 
@@ -63,6 +84,7 @@ def create_server(service: FiscusService | None = None) -> Any:
         dataset_id: str,
         start: str | None = None,
         end: str | None = None,
+        vintage_as_of: str | None = None,
         refresh: bool = False,
     ) -> dict[str, Any]:
         """Fetch a cataloged series (FRED, BEA, BLS, OFR, NY Fed, TreasuryDirect families).
@@ -73,8 +95,16 @@ def create_server(service: FiscusService | None = None) -> Any:
         interpretation warnings instead of curated review. Returns a compact preview,
         binding caveats, provenance, and an artifact descriptor. Read full bytes through
         fiscus-cache://artifact/<cache_key>. Set refresh only for a new source retrieval.
+        For a FRED/ALFRED snapshot, set vintage_as_of to a closed past ISO date; start and
+        end remain observation-date bounds, and FRED_API_KEY is required.
         """
-        return core.get_series(dataset_id, start=start, end=end, refresh=refresh)
+        return core.get_series(
+            dataset_id,
+            start=start,
+            end=end,
+            vintage_as_of=vintage_as_of,
+            refresh=refresh,
+        )
 
     @app.tool()
     def fiscaldata_query(
@@ -113,12 +143,13 @@ def create_server(service: FiscusService | None = None) -> Any:
         end: str | None = None,
         refresh: bool = False,
     ) -> dict[str, Any]:
-        """Fetch a Z.1 Financial Accounts series with enforced FL, FU, or LM semantics.
+        """Fetch a Z.1 Financial Accounts series with enforced official prefix semantics.
 
-        kind must match the series prefix: FL is a period-end level, FU an unadjusted
-        transaction flow, LM a market-value level. The call refuses to present one kind as
-        another — never difference an FL level and call it a flow. Accepts bare mnemonics,
-        .Q/.A suffixed codes, and FRED-style BOGZ1 aliases.
+        kind must match the series prefix. This includes FR revaluations and the other
+        official FA/FC/FG/FI/FL/FS/FU/FV/LA/LM/PC types. The call refuses to present one
+        kind as another. Accepts bare mnemonics, .Q/.A suffixes, and FRED-style BOGZ1 aliases.
+        If an official mnemonic is refused or absent, follow the server issue-reporting
+        instruction before bypassing Fiscus.
         """
         return core.z1_series(code, kind, start=start, end=end, refresh=refresh)
 

@@ -40,7 +40,10 @@ Required fields:
 Optional fields:
 
 - `aliases` and `tags` improve `find_series` recall.
-- `semantics` records Z.1 `FU`/`FL`/`LM`, granularity, accounting basis, and other concept notes.
+- `semantics` records an official Z.1 series-type prefix, granularity, accounting basis, and other concept notes.
+- `release` records a curated file's logical release id, representation, publication
+  and correction dates, and official discovery/layout/errata locators. It is valid
+  only with `logical_release_plus_sha256`.
 - `caveats` records unconditional or conditional warnings.
 - `endpoint.api_url` and `endpoint.series_id` support FRED's keyed and keyless routes.
 - `endpoint.path_template` supports date-addressed routes such as SOMA.
@@ -62,7 +65,24 @@ access:
 
 `auth.mode` is `none`, `optional`, or `required`. Optional and required auth must name an environment variable. Secret values never belong in YAML, request parameters persisted to cache, or manifests.
 
-Set `mode: browser_download_only` with `executor: browser_download` for sources that are known to block reliable machine retrieval. The executor then fails with an explicit classification rather than a mysterious HTTP error.
+Set `mode: browser_download_only` with `executor: browser_download` only for a
+statically confirmed nonmachine route. A live HTTP 403 or 451 from a machine entry is
+reported as `source_access_denied`; it does not by itself establish a permanent
+browser-only fact. HTTP 404 or 410 is reported separately as `source_removed`.
+
+Each executor has exactly one executable tool contract:
+
+| Executor | Required `tools` value |
+|---|---|
+| `fred`, `json_api`, `bls` | `[get_series]` |
+| `fiscaldata` | `[fiscaldata_query]` |
+| `z1` | `[z1_series]` |
+| `soma` | `[soma_holdings]` |
+| `file`, `local_file`, `browser_download` | `[get_file]` |
+
+Duplicate or mismatched tool declarations fail both Pydantic and generated-JSON-Schema
+validation. `browser_download` and `browser_download_only` also imply one another; a
+catalog entry cannot advertise a machine route through the browser-only executor.
 
 ## Conditional caveats
 
@@ -90,7 +110,7 @@ Supported predicates:
 | `param_equals` | A named request parameter equals one value. |
 | `param_in` | A named request parameter is in an allowed value list. |
 | `unit_mixing` | A planned comparison includes one of the named `unit_class` values. |
-| `kind_in` | Z.1 semantic context is one of `FU`, `FL`, or `LM`. |
+| `kind_in` | Z.1 semantic context is one of the official series-type prefixes. |
 
 `when.match` is `all` or `any`. `always` cannot be combined with another predicate.
 
@@ -104,12 +124,32 @@ interpretation on comparison context.
 
 `history` and the returned data date range describe **coverage**, not vintage. `response.vintage_strategy` selects source-version evidence:
 
-- `fred_realtime_or_http`: FRED real-time date when the keyed API supplies it; otherwise HTTP metadata or retrieval UTC.
+- `fred_realtime_or_http`: HTTP validators or retrieval UTC identify current FRED
+  bytes; FRED's default current real-time interval remains provenance metadata.
 - `http_last_modified_or_retrieval`: HTTP `Last-Modified`, then retrieval UTC.
+- `logical_release_plus_sha256`: a curated file's logical release id and
+  representation plus the SHA-256 of exact downloaded bytes. ETag and Last-Modified
+  remain transport metadata.
 - `release_date`: a dated release identifier for package-style sources.
 - `retrieval`: retrieval UTC only.
 
 A fallback retrieval timestamp intentionally creates a new vintage on each refreshed pull. Bytes already stored under one `(dataset, parameters, vintage)` key are immutable; different bytes under the same key are a cache collision.
+
+Remote CSV and TSV files retain their exact source bytes. Their descriptors preserve
+the corresponding `.csv`/`.tsv` representation and MIME type, and cache-hit previews
+parse with the matching delimiter.
+
+```yaml
+release:
+  logical_id: bls.empsit.2020-01-10.usdl-20-0010
+  representation: pdf
+  published_on: 2020-01-10
+  corrected_on: 2020-02-21
+  discovery_url: https://www.bls.gov/bls/news-release/empsit.htm
+response:
+  format: binary
+  vintage_strategy: logical_release_plus_sha256
+```
 
 ## Overlays
 

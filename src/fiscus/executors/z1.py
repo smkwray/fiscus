@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
+from typing import Any
 
 from fiscus.errors import DatasetNotFoundError, SourceRequestError
 from fiscus.http import HttpRequester, RetryPolicy, redact_url, selected_http_metadata
@@ -40,7 +41,7 @@ class Z1Loaded:
     release_date: str
     package_source_url: str
     package_retrieved_at_utc: str
-    package_metadata: dict[str, str]
+    package_metadata: dict[str, Any]
 
 
 class Z1Executor:
@@ -72,24 +73,84 @@ class Z1Executor:
             release_date=manifest["release_date"],
             package_source_url=manifest["source_url"],
             package_retrieved_at_utc=manifest["retrieved_at_utc"],
-            package_metadata=dict(manifest.get("http", {})),
+            package_metadata={
+                "package_sha256": manifest["sha256"],
+                "package_byte_count": manifest["byte_count"],
+                "release_date": manifest["release_date"],
+                "http": dict(manifest["http"]),
+            },
         )
+
+    def search_series(self, query: str, limit: int) -> list[dict[str, str | bool | dict[str, str]]]:
+        """Search the current package data dictionary without a curated-code registry."""
+        query_tokens = _search_tokens(query)
+        if not query_tokens:
+            return []
+        zip_path, manifest = self._ensure_package(refresh=False)
+        matches: list[tuple[int, Z1SeriesMeta]] = []
+        for meta in self._series_index(zip_path).values():
+            frequency = "annual" if meta.code.endswith(".A") else "quarterly"
+            text = " ".join((meta.code, meta.description, meta.table, meta.units, frequency))
+            candidate_tokens = _search_tokens(text)
+            if not query_tokens.issubset(candidate_tokens):
+                continue
+            score = len(query_tokens) * 10
+            normalized_query = " ".join(sorted(query_tokens))
+            normalized_text = " ".join(sorted(candidate_tokens))
+            if normalized_query == normalized_text:
+                score += 100
+            if query.strip().upper().removeprefix("BOGZ1").replace(" ", "") in {
+                meta.code,
+                meta.code.replace(".", ""),
+            }:
+                score += 200
+            matches.append((score, meta))
+        matches.sort(key=lambda item: (-item[0], item[1].code))
+        return [
+            {
+                "id": meta.code,
+                "series_id": meta.code,
+                "title": meta.description,
+                "family": "z1",
+                "units": meta.units,
+                "frequency": "annual" if meta.code.endswith(".A") else "quarterly",
+                "kind": meta.code[:2],
+                "table": meta.table,
+                "curated": False,
+                "source": "z1_data_dictionary",
+                "release_date": manifest["release_date"],
+                "tools": {"z1_series": {"code": meta.code, "kind": meta.code[:2]}},
+            }
+            for _, meta in matches[:limit]
+        ]
 
     def _ensure_package(self, *, refresh: bool) -> tuple[Path, dict]:
         release_date, _ = self._current_release_date()
-        vintage = f"z1-release:{release_date}"
         zip_path = self.package_dir / f"z1-release-{release_date}.zip"
         manifest_path = zip_path.with_suffix(".manifest.json")
         if not refresh and zip_path.is_file() and manifest_path.is_file():
-            return zip_path, json.loads(manifest_path.read_text(encoding="utf-8"))
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                _validate_package(zip_path, manifest, release_date)
+            except (OSError, json.JSONDecodeError, SourceRequestError):
+                pass
+            else:
+                return zip_path, manifest
 
         retrieved_at = datetime.now(UTC).isoformat()
         response = self.requester.get(Z1_PACKAGE_URL, policy=Z1_POLICY)
         content = response.content
         try:
-            zipfile.ZipFile(io.BytesIO(content)).testzip()
-        except zipfile.BadZipFile as exc:
-            raise SourceRequestError("Z.1 package download is not a valid zip archive") from exc
+            with zipfile.ZipFile(io.BytesIO(content)) as archive:
+                corrupt_member = archive.testzip()
+        except zipfile.BadZipFile:
+            raise SourceRequestError("Z.1 package download is not a valid zip archive") from None
+        if corrupt_member is not None:
+            raise SourceRequestError(
+                f"Z.1 package download has a corrupt ZIP member: {corrupt_member}"
+            )
+        digest = hashlib.sha256(content).hexdigest()
+        vintage = f"z1-release:{release_date}|sha256:{digest}"
         self.package_dir.mkdir(parents=True, exist_ok=True)
         temporary = zip_path.with_name(f".{zip_path.name}.{os.getpid()}.tmp")
         temporary.write_bytes(content)
@@ -187,3 +248,51 @@ def _normalize_z1_date(raw: str) -> str:
     if re.fullmatch(r"\d{4}", raw):
         return f"{raw}-12-31"
     return raw
+
+
+def _validate_package(zip_path: Path, manifest: Any, expected_release_date: str) -> None:
+    if not isinstance(manifest, dict):
+        raise SourceRequestError("Z.1 package manifest root is not an object")
+    required_types = {
+        "source_url": str,
+        "retrieved_at_utc": str,
+        "sha256": str,
+        "byte_count": int,
+        "vintage": str,
+        "release_date": str,
+        "http": dict,
+    }
+    for field, expected_type in required_types.items():
+        if not isinstance(manifest.get(field), expected_type):
+            raise SourceRequestError(f"Z.1 package manifest has invalid {field}")
+    if manifest["source_url"] != Z1_PACKAGE_URL:
+        raise SourceRequestError("Z.1 package manifest source URL is invalid")
+    if manifest["release_date"] != expected_release_date:
+        raise SourceRequestError("Z.1 package manifest release date is stale")
+    try:
+        content = zip_path.read_bytes()
+    except OSError:
+        raise SourceRequestError("Z.1 package cache is unreadable") from None
+    digest = hashlib.sha256(content).hexdigest()
+    if len(content) != manifest["byte_count"]:
+        raise SourceRequestError("Z.1 package cache byte count does not match its manifest")
+    if digest != manifest["sha256"]:
+        raise SourceRequestError("Z.1 package cache digest does not match its manifest")
+    expected_vintage = f"z1-release:{expected_release_date}|sha256:{digest}"
+    if manifest["vintage"] != expected_vintage:
+        raise SourceRequestError("Z.1 package manifest vintage does not match its bytes")
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            corrupt_member = archive.testzip()
+    except zipfile.BadZipFile:
+        raise SourceRequestError("Z.1 package cache is not a valid zip archive") from None
+    if corrupt_member is not None:
+        raise SourceRequestError(f"Z.1 package cache has a corrupt ZIP member: {corrupt_member}")
+
+
+def _search_tokens(value: str) -> set[str]:
+    normalized = value.casefold()
+    normalized = re.sub(r"holding (?:gain|gains|loss|losses)", "revaluation", normalized)
+    normalized = normalized.replace("valuation changes", "revaluation")
+    tokens = re.findall(r"[a-z0-9]+", normalized)
+    return {token[:-1] if token.endswith("s") and len(token) > 3 else token for token in tokens}

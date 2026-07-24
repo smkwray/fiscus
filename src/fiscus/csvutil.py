@@ -27,9 +27,17 @@ def rows_to_csv_bytes(
     return buffer.getvalue().encode("utf-8")
 
 
-def csv_bytes_to_rows(data: bytes) -> list[dict[str, str]]:
+def delimited_bytes_to_rows(
+    data: bytes,
+    *,
+    delimiter: str = ",",
+) -> list[dict[str, str]]:
     text = data.decode("utf-8-sig")
-    return [dict(row) for row in csv.DictReader(io.StringIO(text))]
+    return [dict(row) for row in csv.DictReader(io.StringIO(text), delimiter=delimiter)]
+
+
+def csv_bytes_to_rows(data: bytes) -> list[dict[str, str]]:
+    return delimited_bytes_to_rows(data)
 
 
 def _fieldnames(

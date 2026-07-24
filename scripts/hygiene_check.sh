@@ -3,8 +3,8 @@ set -euo pipefail
 
 # hygiene_check.sh — Repo hygiene scan for tracked-eligible files.
 #
-# Enforces the rules in memory-system.md § Git hygiene:
-#   - no full system paths (/Users/..., /home/...) in tracked-eligible files
+# Enforces the project git-hygiene rules (documented in the project AGENTS.md contract):
+#   - no machine-specific absolute system paths in tracked-eligible files
 #   - no references to ../data.md or sibling data inventory paths in src/, tests/, configs/
 #   - git diff --check passes
 #
@@ -136,11 +136,7 @@ fi
 warn_ai=""
 for f in ${FILES[@]+"${FILES[@]}"}; do
   [[ -f "$f" ]] || continue
-  # Public AI-vendor names only; any private orchestration names come from a gitignored
-  # extras list so they never ship in this tracked, public-facing checker.
-  ai_names='codex|claude|gpt[- ]?pro|gpt-?5|openai|anthropic'
-  [[ -f do/.hygiene-extra-names ]] && ai_names="${ai_names}|$(paste -sd'|' do/.hygiene-extra-names 2>/dev/null)"
-  if hits="$(grep -niE "\\b(${ai_names})\\b" "$f" 2>/dev/null)"; then
+  if hits="$(grep -niE '\b(codex|claude|gpt[- ]?pro|gpt-?5|openai|anthropic|\borca\b|\bmako\b|\bdairy\b|\btandy\b)\b' "$f" 2>/dev/null)"; then
     while IFS= read -r line; do
       [[ -z "$line" ]] && continue
       warn_ai+="${f}:${line}"$'\n'

@@ -1,0 +1,162 @@
+schema_version: 1
+family: census
+entries:
+  - id: census.popest.v2025.nc_est2025_agesex_res
+    family: census
+    title: Annual U.S. resident population estimates by single year of age and sex, Vintage 2025
+    description: >-
+      Census Population Estimates Program Vintage 2025 national resident-population
+      estimates by sex and single year of age, with the April 1, 2020 estimates base
+      and July 1 estimates through 2025.
+    publisher: U.S. Census Bureau, Population Division
+    aliases:
+      - NC-EST2025-AGESEX-RES
+      - nc-est2025-agesex-res.csv
+      - Vintage 2025 population by age and sex
+    tags: [census, population, estimates, age, sex, vintage-2025]
+    verified_on: 2026-07-24
+    history:
+      start: 2020-04-01
+      end: 2025-07-01
+      notes: >-
+        The file contains the April 1, 2020 estimates base and July 1 annual
+        estimates for 2020 through 2025.
+    frequency: annual vintage file
+    units:
+      label: Persons
+      scale: persons
+      seasonal_adjustment: not seasonally adjusted
+      annualized: false
+      unit_class: persons_nsa
+    endpoint:
+      url: https://www2.census.gov/programs-surveys/popest/datasets/2020-2025/national/asrh/nc-est2025-agesex-res.csv
+      default_params: {}
+      allowed_params: []
+    access:
+      executor: file
+      mode: machine
+      auth:
+        mode: none
+    response:
+      format: csv
+      date_fields: []
+      value_fields:
+        - ESTIMATESBASE2020
+        - POPESTIMATE2020
+        - POPESTIMATE2021
+        - POPESTIMATE2022
+        - POPESTIMATE2023
+        - POPESTIMATE2024
+        - POPESTIMATE2025
+      pagination:
+        kind: none
+      vintage_strategy: logical_release_plus_sha256
+    refresh:
+      cadence: static completed vintage
+      notes: >-
+        Refresh only to detect an official same-URL correction; later vintages are
+        separate catalog entries.
+    release:
+      logical_id: census.popest.v2025.nc-est2025-agesex-res
+      representation: csv
+      discovery_url: https://www.census.gov/data/tables/time-series/demo/popest/2020s-national-detail.html
+      layout_url: https://www2.census.gov/programs-surveys/popest/technical-documentation/file-layouts/2020-2025/NC-EST2025-AGESEX-RES.pdf
+    semantics:
+      granularity: sex by single year of age
+      basis: Vintage 2025 resident population estimates based on the 2020 estimates base
+      notes: >-
+        SEX=0 is total, 1 is male, and 2 is female. AGE 0-100 denotes single
+        years of age and AGE=999 denotes total population.
+    tools: [get_file]
+    caveats:
+      - id: census.popest.vintage_not_mixable
+        severity: critical
+        message: >-
+          Census revises each population-estimate vintage back to the latest
+          decennial census. Do not combine observations from separate vintages;
+          retain the vintage label and exact source bytes.
+      - id: census.file.same_url_correction
+        severity: warning
+        message: >-
+          Census can correct a file at the same URL. SHA-256 identifies the
+          retrieved representation; changed bytes create a new immutable source
+          revision.
+        source_note: >-
+          Verified 2026-07-24 SHA-256:
+          6436d4f6972d415caf14cb20776807bc031fc9f1bfc9d6ff26055d592a2b0230.
+
+  - id: census.popproj.2023.d1_main
+    family: census
+    title: 2023 national population projections by age, sex, race, and Hispanic origin, main series
+    description: >-
+      Census 2023 main-series national population projections by single year of
+      age, sex, race, and Hispanic origin for 2022 through 2100.
+    publisher: U.S. Census Bureau, Population Division
+    aliases:
+      - np2023_d1_mid.csv
+      - 2023 National Population Projections main series
+      - D1 main series
+    tags: [census, population, projections, age, sex, race, hispanic-origin, main-series]
+    verified_on: 2026-07-24
+    history:
+      start: 2022-07-01
+      end: 2100-07-01
+      notes: >-
+        July 1, 2022 is the official estimates base; projected July 1 populations
+        span 2023 through 2100.
+    frequency: annual projection vintage
+    units:
+      label: Persons
+      scale: persons
+      seasonal_adjustment: not seasonally adjusted
+      annualized: false
+      unit_class: projected_persons_nsa
+    endpoint:
+      url: https://www2.census.gov/programs-surveys/popproj/datasets/2023/2023-popproj/np2023_d1_mid.csv
+      default_params: {}
+      allowed_params: []
+    access:
+      executor: file
+      mode: machine
+      auth:
+        mode: none
+    response:
+      format: csv
+      date_fields: []
+      value_fields: [TOTAL_POP]
+      pagination:
+        kind: none
+      vintage_strategy: logical_release_plus_sha256
+    refresh:
+      cadence: static projection vintage
+      notes: >-
+        Refresh only to detect an official same-URL correction; later projection
+        series and alternate scenarios are separate representations.
+    release:
+      logical_id: census.popproj.2023.d1.main
+      representation: csv
+      discovery_url: https://www.census.gov/data/datasets/2023/demo/popproj/2023-popproj.html
+      layout_url: https://www2.census.gov/programs-surveys/popproj/technical-documentation/file-layouts/2023/np2023_d1.pdf
+    semantics:
+      granularity: projection year, age, sex, race, and Hispanic origin
+      basis: 2023 main-series cohort-component population projection
+      notes: >-
+        This is the main series. High-, low-, and zero-immigration scenarios are
+        distinct source representations and must not be silently combined.
+    tools: [get_file]
+    caveats:
+      - id: census.popproj.scenario
+        severity: critical
+        message: >-
+          This is the 2023 main-series projection representation. Keep projection
+          vintage and scenario explicit; do not mix it with later projection
+          releases or alternate scenarios.
+      - id: census.file.same_url_correction
+        severity: warning
+        message: >-
+          Census can correct a file at the same URL. SHA-256 identifies the
+          retrieved representation; changed bytes create a new immutable source
+          revision.
+        source_note: >-
+          Verified 2026-07-24 SHA-256:
+          1532822751d0d08b69bb9947e4f64cb2d2217229000bd7a97997d305b890d16f.

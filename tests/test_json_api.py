@@ -39,6 +39,9 @@ OFR_PAYLOAD = [["2026-04-30", 8351000000000.12], ["2026-05-31", 8400986581507.48
 def test_bea_period_end_normalization() -> None:
     assert bea_period_end("2025Q1") == "2025-03-31"
     assert bea_period_end("2025M03") == "2025-03-31"
+    assert bea_period_end("2000M02") == "2000-02-29"
+    assert bea_period_end("2024M02") == "2024-02-29"
+    assert bea_period_end("2100M02") == "2100-02-28"
     assert bea_period_end("2025") == "2025-12-31"
     assert bea_period_end("garbage") == ""
 

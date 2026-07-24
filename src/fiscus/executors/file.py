@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
@@ -15,7 +16,7 @@ from fiscus.http import (
     selected_http_metadata,
     source_vintage_from_headers,
 )
-from fiscus.models import CatalogEntry, ResponseFormat
+from fiscus.models import CatalogEntry, ResponseFormat, VintageStrategy
 
 FILE_POLICY = RetryPolicy(attempts=3, backoff_seconds=1.0, politeness_delay_seconds=0.3)
 
@@ -52,21 +53,41 @@ class FileExecutor:
                 {str(key): "" if value is None else str(value) for key, value in row.items()}
                 for row in reader
             ]
-            data_file = "data.csv"
+            data_file = (
+                "data.csv" if entry.response.format == ResponseFormat.CSV else "data.tsv"
+            )
         else:
             rows = []
             data_file = _source_filename(str(entry.endpoint.url))
+
+        source_metadata = {
+            "mode": "file_download",
+            "source_format": entry.response.format.value,
+            "http": selected_http_metadata(response.headers),
+        }
+        if entry.response.vintage_strategy == VintageStrategy.LOGICAL_RELEASE_PLUS_SHA256:
+            if entry.release is None:  # pragma: no cover - catalog validation invariant
+                raise SourceRequestError(f"{entry.id} omitted logical release metadata")
+            digest = hashlib.sha256(content).hexdigest()
+            vintage = (
+                f"{entry.release.logical_id}|{entry.release.representation}|sha256:{digest}"
+            )
+            source_metadata.update(
+                {
+                    "release": entry.release.model_dump(mode="json"),
+                    "content_sha256": digest,
+                    "identity_strategy": "logical_release_plus_sha256",
+                }
+            )
+        else:
+            vintage = source_vintage_from_headers(response.headers, retrieved_at)
 
         result = FetchResult(
             rows=rows,
             source_url=redact_url(str(response.request.url)),
             retrieved_at_utc=retrieved_at,
-            vintage=source_vintage_from_headers(response.headers, retrieved_at),
-            source_metadata={
-                "mode": "file_download",
-                "source_format": entry.response.format.value,
-                "http": selected_http_metadata(response.headers),
-            },
+            vintage=vintage,
+            source_metadata=source_metadata,
         )
         return result, content, data_file
 

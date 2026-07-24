@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import traceback
+
 import httpx
 import pytest
 
-from fiscus.errors import SourceRequestError
+from fiscus.errors import (
+    SourceAccessDeniedError,
+    SourceRemovedError,
+    SourceRequestError,
+)
 from fiscus.http import HttpRequester, RetryPolicy
 
 
@@ -24,6 +30,121 @@ def test_request_error_redacts_query_secret() -> None:
     message = str(captured.value)
     assert secret not in message
     assert "REDACTED" in message
+    client.close()
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_type", "code"),
+    [
+        (404, SourceRemovedError, "source_removed"),
+        (410, SourceRemovedError, "source_removed"),
+        (403, SourceAccessDeniedError, "source_access_denied"),
+        (451, SourceAccessDeniedError, "source_access_denied"),
+    ],
+)
+def test_source_statuses_distinguish_removal_from_access_denial(
+    status: int,
+    expected_type: type[SourceRequestError],
+    code: str,
+) -> None:
+    secret = "private-token"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, text="source response", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    requester = HttpRequester(client, sleep=lambda _: None)
+    with pytest.raises(expected_type) as captured:
+        requester.get(
+            "https://example.test/archive.csv",
+            params={"token": secret},
+            policy=RetryPolicy(attempts=1, politeness_delay_seconds=0),
+        )
+
+    assert isinstance(captured.value, SourceRequestError)
+    assert captured.value.code == code
+    assert f"HTTP {status}" in str(captured.value)
+    assert secret not in str(captured.value)
+    assert "REDACTED" in str(captured.value)
+    client.close()
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_type"),
+    [
+        (400, SourceRequestError),
+        (403, SourceAccessDeniedError),
+        (404, SourceRemovedError),
+        (410, SourceRemovedError),
+        (451, SourceAccessDeniedError),
+    ],
+)
+@pytest.mark.parametrize(
+    ("content_type", "body"),
+    [
+        ("text/plain", "reflected {url}"),
+        ("application/json", '{"error": "reflected {url}"}'),
+    ],
+)
+def test_credentialed_http_error_omits_reflected_body_and_cause(
+    status: int,
+    expected_type: type[SourceRequestError],
+    content_type: str,
+    body: str,
+) -> None:
+    secret = "sensitive custom value/with spaces"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        reflected = body.replace("{url}", str(request.url))
+        return httpx.Response(
+            status,
+            text=reflected,
+            headers={"content-type": content_type},
+            request=request,
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    requester = HttpRequester(client, sleep=lambda _: None)
+    with pytest.raises(expected_type) as captured:
+        requester.get(
+            "https://example.test/data",
+            params={"customCredential": secret},
+            secret_params={"customCredential"},
+            policy=RetryPolicy(attempts=1, politeness_delay_seconds=0),
+        )
+
+    rendered = "".join(
+        traceback.format_exception(
+            type(captured.value),
+            captured.value,
+            captured.value.__traceback__,
+        )
+    )
+    assert secret not in str(captured.value)
+    assert secret not in rendered
+    assert "sensitive%20custom" not in rendered
+    assert "reflected" not in str(captured.value)
+    assert captured.value.__cause__ is None
+    assert "customCredential=REDACTED" in str(captured.value)
+    client.close()
+
+
+def test_noncredentialed_http_error_keeps_bounded_body_detail() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            text="public diagnostic",
+            headers={"content-type": "text/plain"},
+            request=request,
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    requester = HttpRequester(client, sleep=lambda _: None)
+    with pytest.raises(SourceRequestError, match="public diagnostic"):
+        requester.get(
+            "https://example.test/data",
+            policy=RetryPolicy(attempts=1, politeness_delay_seconds=0),
+        )
     client.close()
 
 
