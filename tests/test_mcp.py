@@ -16,9 +16,23 @@ def test_mcp_issue_reporting_instruction_resolves_live_state_file() -> None:
     instruction = _issue_reporting_instruction()
     expected = Path(__file__).parents[1] / "do" / "state.md"
 
-    assert str(expected) in instruction
+    if expected.is_file():
+        assert str(expected) in instruction
+        assert "before ending the turn" in instruction
+    else:
+        assert "when a Fiscus checkout is available" in instruction
     assert "missing capability" in instruction
-    assert "before ending the turn" in instruction
+
+
+def test_mcp_issue_reporting_instruction_has_public_checkout_fallback(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(Path, "is_file", lambda _: False)
+
+    instruction = _issue_reporting_instruction()
+
+    assert "when a Fiscus checkout is available" in instruction
+    assert "missing capability" in instruction
 
 
 def test_mcp_lists_core_tools_and_serves_artifact_resource(tmp_path: Path) -> None:
