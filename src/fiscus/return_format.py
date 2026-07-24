@@ -67,6 +67,7 @@ def build_fetch_response(
             "family": entry.family,
             "frequency": entry.frequency,
             "units": entry.units.model_dump(mode="json"),
+            "semantics": entry.semantics.model_dump(mode="json"),
             "verified_on": entry.verified_on.isoformat(),
         },
         "preview": {

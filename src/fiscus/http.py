@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC
 from email.utils import parsedate_to_datetime
@@ -11,7 +11,11 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 
-from fiscus.errors import SourceRequestError
+from fiscus.errors import (
+    SourceAccessDeniedError,
+    SourceRemovedError,
+    SourceRequestError,
+)
 
 RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
 
@@ -42,8 +46,15 @@ class HttpRequester:
         *,
         params: Mapping[str, Any] | None = None,
         policy: RetryPolicy = DEFAULT_RETRY_POLICY,
+        secret_params: Iterable[str] = (),
     ) -> httpx.Response:
-        return self._request("GET", url, params=params, policy=policy)
+        return self._request(
+            "GET",
+            url,
+            params=params,
+            policy=policy,
+            secret_params=secret_params,
+        )
 
     def head(
         self,
@@ -51,8 +62,15 @@ class HttpRequester:
         *,
         params: Mapping[str, Any] | None = None,
         policy: RetryPolicy = DEFAULT_RETRY_POLICY,
+        secret_params: Iterable[str] = (),
     ) -> httpx.Response:
-        return self._request("HEAD", url, params=params, policy=policy)
+        return self._request(
+            "HEAD",
+            url,
+            params=params,
+            policy=policy,
+            secret_params=secret_params,
+        )
 
     def _request(
         self,
@@ -61,8 +79,19 @@ class HttpRequester:
         *,
         params: Mapping[str, Any] | None = None,
         policy: RetryPolicy = DEFAULT_RETRY_POLICY,
+        secret_params: Iterable[str] = (),
     ) -> httpx.Response:
-        safe_target = redact_url(str(self.client.build_request(method, url, params=params).url))
+        protected_names = SECRET_QUERY_PARAMS | frozenset(
+            name.casefold() for name in secret_params
+        )
+        has_credentials = any(
+            key.casefold() in protected_names and value not in {None, ""}
+            for key, value in (params or {}).items()
+        )
+        safe_target = redact_url(
+            str(self.client.build_request(method, url, params=params).url),
+            protected_names,
+        )
         last_error: Exception | None = None
         for attempt in range(1, policy.attempts + 1):
             if policy.politeness_delay_seconds > 0:
@@ -79,14 +108,19 @@ class HttpRequester:
                 continue
 
             if response.status_code not in RETRYABLE_STATUS:
-                try:
-                    response.raise_for_status()
-                except httpx.HTTPStatusError as exc:
-                    safe_url = redact_url(str(exc.request.url))
-                    detail = _response_detail(response)
-                    raise SourceRequestError(
+                if response.is_error:
+                    safe_url = redact_url(str(response.request.url), protected_names)
+                    detail = "" if has_credentials else _response_detail(response)
+                    error_type: type[SourceRequestError]
+                    if response.status_code in {404, 410}:
+                        error_type = SourceRemovedError
+                    elif response.status_code in {403, 451}:
+                        error_type = SourceAccessDeniedError
+                    else:
+                        error_type = SourceRequestError
+                    raise error_type(
                         f"source returned HTTP {response.status_code} for {safe_url}{detail}"
-                    ) from exc
+                    ) from None
                 return response
 
             last_error = SourceRequestError(

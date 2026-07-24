@@ -87,6 +87,347 @@
     },
     "CatalogEntry": {
       "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "access": {
+                "properties": {
+                  "executor": {
+                    "const": "fred"
+                  }
+                },
+                "required": [
+                  "executor"
+                ]
+              }
+            },
+            "required": [
+              "access"
+            ]
+          },
+          "then": {
+            "properties": {
+              "tools": {
+                "const": [
+                  "get_series"
+                ]
+              }
+            },
+            "required": [
+              "tools"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "access": {
+                "properties": {
+                  "executor": {
+                    "const": "json_api"
+                  }
+                },
+                "required": [
+                  "executor"
+                ]
+              }
+            },
+            "required": [
+              "access"
+            ]
+          },
+          "then": {
+            "properties": {
+              "tools": {
+                "const": [
+                  "get_series"
+                ]
+              }
+            },
+            "required": [
+              "tools"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "access": {
+                "properties": {
+                  "executor": {
+                    "const": "bls"
+                  }
+                },
+                "required": [
+                  "executor"
+                ]
+              }
+            },
+            "required": [
+              "access"
+            ]
+          },
+          "then": {
+            "properties": {
+              "tools": {
+                "const": [
+                  "get_series"
+                ]
+              }
+            },
+            "required": [
+              "tools"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "access": {
+                "properties": {
+                  "executor": {
+                    "const": "fiscaldata"
+                  }
+                },
+                "required": [
+                  "executor"
+                ]
+              }
+            },
+            "required": [
+              "access"
+            ]
+          },
+          "then": {
+            "properties": {
+              "tools": {
+                "const": [
+                  "fiscaldata_query"
+                ]
+              }
+            },
+            "required": [
+              "tools"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "access": {
+                "properties": {
+                  "executor": {
+                    "const": "z1"
+                  }
+                },
+                "required": [
+                  "executor"
+                ]
+              }
+            },
+            "required": [
+              "access"
+            ]
+          },
+          "then": {
+            "properties": {
+              "tools": {
+                "const": [
+                  "z1_series"
+                ]
+              }
+            },
+            "required": [
+              "tools"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "access": {
+                "properties": {
+                  "executor": {
+                    "const": "soma"
+                  }
+                },
+                "required": [
+                  "executor"
+                ]
+              }
+            },
+            "required": [
+              "access"
+            ]
+          },
+          "then": {
+            "properties": {
+              "tools": {
+                "const": [
+                  "soma_holdings"
+                ]
+              }
+            },
+            "required": [
+              "tools"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "access": {
+                "properties": {
+                  "executor": {
+                    "const": "file"
+                  }
+                },
+                "required": [
+                  "executor"
+                ]
+              }
+            },
+            "required": [
+              "access"
+            ]
+          },
+          "then": {
+            "properties": {
+              "tools": {
+                "const": [
+                  "get_file"
+                ]
+              }
+            },
+            "required": [
+              "tools"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "access": {
+                "properties": {
+                  "executor": {
+                    "const": "local_file"
+                  }
+                },
+                "required": [
+                  "executor"
+                ]
+              }
+            },
+            "required": [
+              "access"
+            ]
+          },
+          "then": {
+            "properties": {
+              "tools": {
+                "const": [
+                  "get_file"
+                ]
+              }
+            },
+            "required": [
+              "tools"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "access": {
+                "properties": {
+                  "executor": {
+                    "const": "browser_download"
+                  }
+                },
+                "required": [
+                  "executor"
+                ]
+              }
+            },
+            "required": [
+              "access"
+            ]
+          },
+          "then": {
+            "properties": {
+              "tools": {
+                "const": [
+                  "get_file"
+                ]
+              }
+            },
+            "required": [
+              "tools"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "access": {
+                "properties": {
+                  "executor": {
+                    "const": "browser_download"
+                  }
+                },
+                "required": [
+                  "executor"
+                ]
+              }
+            },
+            "required": [
+              "access"
+            ]
+          },
+          "then": {
+            "properties": {
+              "access": {
+                "properties": {
+                  "mode": {
+                    "const": "browser_download_only"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "access": {
+                "properties": {
+                  "mode": {
+                    "const": "browser_download_only"
+                  }
+                },
+                "required": [
+                  "mode"
+                ]
+              }
+            },
+            "required": [
+              "access"
+            ]
+          },
+          "then": {
+            "properties": {
+              "access": {
+                "properties": {
+                  "executor": {
+                    "const": "browser_download"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
       "properties": {
         "access": {
           "$ref": "#/$defs/AccessSpec"
@@ -135,6 +476,17 @@
         },
         "refresh": {
           "$ref": "#/$defs/RefreshSpec"
+        },
+        "release": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReleaseSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "response": {
           "$ref": "#/$defs/ResponseSpec"
@@ -476,7 +828,6 @@
         "fiscaldata",
         "z1",
         "soma",
-        "release",
         "json_api",
         "bls",
         "file",
@@ -532,9 +883,18 @@
         "kinds": {
           "items": {
             "enum": [
-              "FU",
+              "FA",
+              "FC",
+              "FG",
+              "FI",
               "FL",
-              "LM"
+              "FR",
+              "FS",
+              "FU",
+              "FV",
+              "LA",
+              "LM",
+              "PC"
             ],
             "type": "string"
           },
@@ -672,6 +1032,91 @@
       "title": "RefreshSpec",
       "type": "object"
     },
+    "ReleaseSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "corrected_on": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Corrected On"
+        },
+        "discovery_url": {
+          "format": "uri",
+          "maxLength": 2083,
+          "minLength": 1,
+          "title": "Discovery Url",
+          "type": "string"
+        },
+        "errata_url": {
+          "anyOf": [
+            {
+              "format": "uri",
+              "maxLength": 2083,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Errata Url"
+        },
+        "layout_url": {
+          "anyOf": [
+            {
+              "format": "uri",
+              "maxLength": 2083,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Layout Url"
+        },
+        "logical_id": {
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Logical Id",
+          "type": "string"
+        },
+        "published_on": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Published On"
+        },
+        "representation": {
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Representation",
+          "type": "string"
+        }
+      },
+      "required": [
+        "logical_id",
+        "representation",
+        "discovery_url"
+      ],
+      "title": "ReleaseSpec",
+      "type": "object"
+    },
     "ResponseFormat": {
       "enum": [
         "csv",
@@ -774,9 +1219,18 @@
           "anyOf": [
             {
               "enum": [
-                "FU",
+                "FA",
+                "FC",
+                "FG",
+                "FI",
                 "FL",
-                "LM"
+                "FR",
+                "FS",
+                "FU",
+                "FV",
+                "LA",
+                "LM",
+                "PC"
               ],
               "type": "string"
             },
@@ -818,8 +1272,7 @@
         "get_file",
         "fiscaldata_query",
         "z1_series",
-        "soma_holdings",
-        "release_table"
+        "soma_holdings"
       ],
       "title": "ToolName",
       "type": "string"
@@ -908,6 +1361,7 @@
       "enum": [
         "fred_realtime_or_http",
         "http_last_modified_or_retrieval",
+        "logical_release_plus_sha256",
         "retrieval",
         "release_date"
       ],

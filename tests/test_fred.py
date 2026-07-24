@@ -1,10 +1,21 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
+import pytest
 
+from fiscus.cache import canonical_params
+from fiscus.errors import (
+    CacheCollisionError,
+    InvalidVintageError,
+    MissingKeyError,
+    SourceRequestError,
+    UnsupportedVintageError,
+)
 from fiscus.service import FiscusService
 
 
@@ -68,7 +79,7 @@ def test_keyless_fred_fetch_is_cached_and_returns_provenance(
     client.close()
 
 
-def test_keyed_fred_api_redacts_secret_and_uses_realtime_vintage(
+def test_keyed_fred_api_redacts_secret_and_keeps_realtime_period_as_metadata(
     tmp_path: Path,
     fixture_dir: Path,
     monkeypatch,
@@ -95,8 +106,311 @@ def test_keyed_fred_api_redacts_secret_and_uses_realtime_vintage(
             end="2024-01-31",
         )
 
-    assert result["provenance"]["vintage"] == "fred-realtime:2026-07-13"
+    assert result["provenance"]["vintage"].startswith("retrieval:")
+    assert result["provenance"]["source_metadata"]["response"] == {
+        "realtime_start": "2026-07-13",
+        "realtime_end": "2026-07-13",
+        "observation_start": "2024-01-01",
+        "observation_end": "2024-01-31",
+    }
     assert secret not in result["provenance"]["source_url"]
     assert "REDACTED" in result["provenance"]["source_url"]
     assert result["preview"]["row_count"] == 2
+    client.close()
+
+
+def test_keyed_fred_same_day_refresh_uses_http_revision_identity(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    secret = "a" * 32
+    monkeypatch.setenv("FRED_API_KEY", secret)
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        value = "750000" if calls == 1 else "760000"
+        payload = (
+            "{"
+            '"realtime_start":"2026-07-23",'
+            '"realtime_end":"2026-07-23",'
+            '"observations":['
+            '{"realtime_start":"2026-07-23","realtime_end":"2026-07-23",'
+            f'"date":"2026-07-22","value":"{value}"'
+            "}]"
+            "}"
+        ).encode()
+        return httpx.Response(
+            200,
+            content=payload,
+            headers={"Content-Type": "application/json", "ETag": f'"revision-{calls}"'},
+            request=request,
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service:
+        first = service.get_series("fred.wdtgal")
+        second = service.get_series("fred.wdtgal", refresh=True)
+
+    assert calls == 2
+    assert first["provenance"]["vintage"].startswith("http-etag:")
+    assert second["provenance"]["vintage"].startswith("http-etag:")
+    assert first["provenance"]["vintage"] != second["provenance"]["vintage"]
+    assert first["artifact"]["cache_key"] != second["artifact"]["cache_key"]
+    assert first["preview"]["head"][0]["value"] == "750000"
+    assert second["preview"]["head"][0]["value"] == "760000"
+    assert first["provenance"]["source_metadata"]["response"]["realtime_end"] == "2026-07-23"
+    assert second["provenance"]["source_metadata"]["response"]["realtime_end"] == "2026-07-23"
+    client.close()
+
+
+def _alfred_payload(
+    vintage: str,
+    observations: list[tuple[str, str]],
+    *,
+    count: int | None = None,
+    offset: int = 0,
+    limit: int = 100_000,
+) -> bytes:
+    return json.dumps(
+        {
+            "realtime_start": vintage,
+            "realtime_end": vintage,
+            "observation_start": observations[0][0] if observations else "1900-01-01",
+            "observation_end": observations[-1][0] if observations else "1900-01-01",
+            "units": "lin",
+            "output_type": 1,
+            "sort_order": "asc",
+            "order_by": "observation_date",
+            "count": len(observations) if count is None else count,
+            "offset": offset,
+            "limit": limit,
+            "observations": [
+                {
+                    "realtime_start": vintage,
+                    "realtime_end": vintage,
+                    "date": observation_date,
+                    "value": value,
+                }
+                for observation_date, value in observations
+            ],
+        }
+    ).encode()
+
+
+def test_alfred_two_snapshots_separate_observation_and_information_dates(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    secret = "v" * 32
+    monkeypatch.setenv("FRED_API_KEY", secret)
+    seen: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        seen.append(params)
+        vintage = params["realtime_start"]
+        assert params["realtime_end"] == vintage
+        assert params["observation_start"] == "2020-01-01"
+        assert params["observation_end"] == "2020-12-31"
+        assert params["output_type"] == "1"
+        assert params["units"] == "lin"
+        assert params["sort_order"] == "asc"
+        assert params["limit"] == "100000"
+        value = "100" if vintage == "2021-01-15" else "110"
+        payload = json.loads(_alfred_payload(vintage, [("2020-01-01", value)]))
+        payload["observation_start"] = params["observation_start"]
+        payload["observation_end"] = params["observation_end"]
+        return httpx.Response(
+            200,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            request=request,
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service:
+        first = service.get_series(
+            "fred.wdtgal",
+            start="2020-01-01",
+            end="2020-12-31",
+            vintage_as_of="2021-01-15",
+        )
+        second = service.get_series(
+            "fred.wdtgal",
+            start="2020-01-01",
+            end="2020-12-31",
+            vintage_as_of="2021-02-15",
+        )
+
+    assert len(seen) == 2
+    assert first["preview"]["head"][0]["value"] == "100"
+    assert second["preview"]["head"][0]["value"] == "110"
+    assert first["provenance"]["vintage"] == "alfred-as-of:2021-01-15"
+    assert second["provenance"]["vintage"] == "alfred-as-of:2021-02-15"
+    assert first["artifact"]["cache_key"] != second["artifact"]["cache_key"]
+    metadata = first["provenance"]["source_metadata"]
+    assert metadata["mode"] == "alfred_as_of"
+    assert metadata["requested_observation_bounds"] == {
+        "start": "2020-01-01",
+        "end": "2020-12-31",
+    }
+    assert metadata["requested_vintage_as_of"] == "2021-01-15"
+    assert "api_key" not in metadata["request"]
+    assert secret not in first["provenance"]["source_url"]
+    assert any(item["id"] == "fred.alfred_information_snapshot" for item in first["caveats"])
+    client.close()
+
+
+def test_alfred_requires_key_and_rejects_non_fred_without_network(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("FRED_API_KEY", raising=False)
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise AssertionError(f"unexpected network request: {request.url}")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service:
+        with pytest.raises(MissingKeyError):
+            service.get_series("fred.wdtgal", vintage_as_of="2020-01-15")
+        with pytest.raises(UnsupportedVintageError):
+            service.get_series("bls.lns14000000", vintage_as_of="2020-01-15")
+
+    assert calls == 0
+    client.close()
+
+
+def test_alfred_rejects_unclosed_or_malformed_date_before_network(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("FRED_API_KEY", "v" * 32)
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise AssertionError(f"unexpected network request: {request.url}")
+
+    today = datetime.now(UTC).date()
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service:
+        for invalid in (
+            "not-a-date",
+            today.isoformat(),
+            (today + timedelta(days=1)).isoformat(),
+        ):
+            with pytest.raises(InvalidVintageError):
+                service.get_series("fred.wdtgal", vintage_as_of=invalid)
+
+    assert calls == 0
+    client.close()
+
+
+def test_alfred_future_leak_fails_without_cache_write(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("FRED_API_KEY", "v" * 32)
+    vintage = "2020-01-15"
+    payload = json.loads(_alfred_payload(vintage, [("2019-01-01", "1")]))
+    payload["observations"][0]["realtime_end"] = "2020-02-01"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service:
+        with pytest.raises(SourceRequestError, match="row real-time bounds"):
+            service.get_series("fred.wdtgal", vintage_as_of=vintage)
+        params = canonical_params(
+            {
+                "start": None,
+                "end": None,
+                "source_mode": "alfred_api_json",
+                "vintage_as_of": vintage,
+            }
+        )
+        assert service.cache.load_latest("fred.wdtgal", params) is None
+
+    client.close()
+
+
+def test_alfred_paginates_contiguously_and_accepts_empty_history(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("FRED_API_KEY", "v" * 32)
+    monkeypatch.setattr("fiscus.executors.fred.ALFRED_PAGE_LIMIT", 2)
+    offsets: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        vintage = request.url.params["realtime_start"]
+        offset = int(request.url.params["offset"])
+        offsets.append(offset)
+        if vintage == "2020-01-15":
+            page = (
+                [("2018-01-01", "1"), ("2019-01-01", "2")]
+                if offset == 0
+                else [("2020-01-01", "3")]
+            )
+            return httpx.Response(
+                200,
+                content=_alfred_payload(vintage, page, count=3, offset=offset, limit=2),
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            content=_alfred_payload(vintage, [], count=0, offset=0, limit=2),
+            request=request,
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service:
+        paged = service.get_series("fred.wdtgal", vintage_as_of="2020-01-15")
+        empty = service.get_series("fred.wdtgal", vintage_as_of="1900-01-15")
+
+    assert offsets == [0, 2, 0]
+    assert paged["preview"]["row_count"] == 3
+    assert paged["provenance"]["source_metadata"]["pagination"] == {
+        "count": 3,
+        "page_count": 2,
+        "offsets_fetched": [0, 2],
+    }
+    assert empty["preview"]["row_count"] == 0
+    assert empty["provenance"]["vintage"] == "alfred-as-of:1900-01-15"
+    client.close()
+
+
+def test_alfred_same_information_date_changed_bytes_exposes_correction(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("FRED_API_KEY", "v" * 32)
+    calls = 0
+    vintage = "2020-01-15"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            content=_alfred_payload(vintage, [("2019-01-01", str(calls))]),
+            request=request,
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service:
+        first = service.get_series("fred.wdtgal", vintage_as_of=vintage)
+        with pytest.raises(CacheCollisionError):
+            service.get_series("fred.wdtgal", vintage_as_of=vintage, refresh=True)
+
+    assert first["provenance"]["vintage"] == f"alfred-as-of:{vintage}"
+    assert calls == 2
     client.close()

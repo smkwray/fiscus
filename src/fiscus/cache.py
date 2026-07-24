@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from fiscus.config import data_root
-from fiscus.csvutil import csv_bytes_to_rows
+from fiscus.csvutil import delimited_bytes_to_rows
 from fiscus.errors import CacheCollisionError, CacheError
 
 _HEX = frozenset("0123456789abcdef")
@@ -320,17 +320,18 @@ class CacheManager:
         return data
 
     def iter_csv_rows(self, cache_key: str) -> Iterator[dict[str, str]]:
-        """Iterate canonical CSV rows for a full cache key or unique prefix.
+        """Iterate canonical CSV/TSV rows for a full cache key or unique prefix.
 
         The database BLOB is verified and read before this method returns the iterator, so
         iteration does not depend on a live cursor or a cache-owned materialized file.
         """
         resolved = self._resolve_key(cache_key)
         descriptor, _, data = self._read_record(resolved)
-        if not _is_csv(descriptor):
-            raise CacheError(f"cache artifact is not CSV: {resolved}")
+        delimiter = _tabular_delimiter(descriptor)
+        if delimiter is None:
+            raise CacheError(f"cache artifact is not CSV or TSV: {resolved}")
         text = io.StringIO(data.decode("utf-8-sig"), newline="")
-        reader = csv.DictReader(text)
+        reader = csv.DictReader(text, delimiter=delimiter)
         return (dict(row) for row in reader)
 
     def _resolve_key(self, cache_key: str) -> str:
@@ -348,7 +349,12 @@ class CacheManager:
 
     def _load_by_key(self, cache_key: str, *, cache_hit: bool) -> CachedArtifact:
         descriptor, manifest, data = self._read_record(cache_key)
-        rows = csv_bytes_to_rows(data) if _is_csv(descriptor) else []
+        delimiter = _tabular_delimiter(descriptor)
+        rows = (
+            delimited_bytes_to_rows(data, delimiter=delimiter)
+            if delimiter is not None
+            else []
+        )
         return CachedArtifact(
             descriptor=descriptor,
             manifest=manifest,
@@ -602,6 +608,8 @@ def _mime_type(filename: str, manifest: dict[str, Any]) -> str:
         return declared.split(";", 1)[0].strip().lower()
     if filename.lower().endswith(".csv"):
         return "text/csv"
+    if filename.lower().endswith(".tsv"):
+        return "text/tab-separated-values"
     source_metadata = manifest.get("source_metadata")
     if isinstance(source_metadata, dict):
         http_metadata = source_metadata.get("http")
@@ -613,8 +621,15 @@ def _mime_type(filename: str, manifest: dict[str, Any]) -> str:
     return guessed or "application/octet-stream"
 
 
-def _is_csv(descriptor: ArtifactDescriptor) -> bool:
-    return descriptor.mime_type == "text/csv" or descriptor.filename.lower().endswith(".csv")
+def _tabular_delimiter(descriptor: ArtifactDescriptor) -> str | None:
+    if (
+        descriptor.mime_type == "text/tab-separated-values"
+        or descriptor.filename.lower().endswith(".tsv")
+    ):
+        return "\t"
+    if descriptor.mime_type == "text/csv" or descriptor.filename.lower().endswith(".csv"):
+        return ","
+    return None
 
 
 def _params_json(params: dict[str, Any]) -> str:

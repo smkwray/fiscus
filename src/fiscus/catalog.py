@@ -12,7 +12,7 @@ import yaml
 from pydantic import ValidationError
 
 from fiscus.errors import CatalogError, DatasetNotFoundError
-from fiscus.models import CatalogEntry, CatalogFile
+from fiscus.models import EXECUTOR_TOOL, AccessMode, CatalogEntry, CatalogFile, ExecutorKind
 
 CATALOG_SCHEMA_VERSION = 1
 FAMILY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
@@ -115,6 +115,71 @@ class Catalog:
 
 def catalog_schema_json() -> str:
     schema = CatalogFile.model_json_schema()
+    entry_schema = schema["$defs"]["CatalogEntry"]
+    entry_schema["allOf"] = [
+        *[
+            {
+                "if": {
+                    "properties": {
+                        "access": {
+                            "properties": {"executor": {"const": executor.value}},
+                            "required": ["executor"],
+                        }
+                    },
+                    "required": ["access"],
+                },
+                "then": {
+                    "properties": {"tools": {"const": [tool.value]}},
+                    "required": ["tools"],
+                },
+            }
+            for executor, tool in EXECUTOR_TOOL.items()
+        ],
+        {
+            "if": {
+                "properties": {
+                    "access": {
+                        "properties": {
+                            "executor": {"const": ExecutorKind.BROWSER_DOWNLOAD.value}
+                        },
+                        "required": ["executor"],
+                    }
+                },
+                "required": ["access"],
+            },
+            "then": {
+                "properties": {
+                    "access": {
+                        "properties": {
+                            "mode": {"const": AccessMode.BROWSER_DOWNLOAD_ONLY.value}
+                        }
+                    }
+                }
+            },
+        },
+        {
+            "if": {
+                "properties": {
+                    "access": {
+                        "properties": {
+                            "mode": {"const": AccessMode.BROWSER_DOWNLOAD_ONLY.value}
+                        },
+                        "required": ["mode"],
+                    }
+                },
+                "required": ["access"],
+            },
+            "then": {
+                "properties": {
+                    "access": {
+                        "properties": {
+                            "executor": {"const": ExecutorKind.BROWSER_DOWNLOAD.value}
+                        }
+                    }
+                }
+            },
+        },
+    ]
     return json.dumps(schema, indent=2, sort_keys=True) + "\n"
 
 

@@ -41,6 +41,8 @@ AGENTS.md
 
 # .githooks/ is INTENTIONALLY NOT IGNORED — it ships the pre-commit hook
 # that other contributors install with `git config core.hooksPath .githooks`
+# local tooling's controller-local history-sync wrapper is not part of that public hook.
+.githooks/post-commit
 
 # Local configuration and secrets (skeleton additions)
 .env.*

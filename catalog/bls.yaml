@@ -53,7 +53,7 @@ entries:
     caveats:
       - id: bls.year_window_limit
         severity: warning
-        message: The API caps each request at 10 years without a key and 20 years with one. A long history requires multiple year-windowed calls; a single call silently returns only the requested window.
+        message: The API caps each request at 10 years without a key and 20 years with one. Fiscus chunks bounded longer histories into inclusive nonoverlapping year windows; large requests therefore make multiple source calls.
       - id: bls.cps_revisions
         severity: info
         message: Seasonally adjusted CPS series revise with annual seasonal-factor updates and population-control adjustments; January observations can shift levels without underlying labor-market change.
@@ -162,3 +162,158 @@ entries:
       - id: bls.browser_download_only
         severity: critical
         message: bls.gov blocks non-browser agents from downloading these XLSX tables (HTTP 403). Retrieve the file in a browser session and register it locally; an automated fetch cannot succeed and this entry exists to say so explicitly.
+
+  - id: bls.empsit.2020_01_10.usdl_20_0010.pdf
+    family: bls
+    title: The Employment Situation — December 2019 (January 10, 2020 PDF release)
+    description: >-
+      Exact PDF representation of BLS Employment Situation release USDL-20-0010,
+      published January 10, 2020 and reissued February 21, 2020 to correct Table A-5.
+    publisher: U.S. Bureau of Labor Statistics
+    aliases:
+      - USDL-20-0010
+      - empsit_01102020.pdf
+      - December 2019 Employment Situation
+    tags: [bls, employment-situation, archived-release, pdf, usdl-20-0010]
+    verified_on: 2026-07-24
+    history:
+      start: 2019-12-01
+      end: 2019-12-31
+      notes: Release reference month is December 2019; publication date is recorded separately.
+    frequency: one archived monthly release
+    units:
+      label: Release tables contain mixed labor-market measures
+      scale: mixed
+      seasonal_adjustment: mixed
+      annualized: false
+      unit_class: mixed_fields
+    endpoint:
+      url: https://www.bls.gov/news.release/archives/empsit_01102020.pdf
+      default_params: {}
+      allowed_params: []
+    access:
+      executor: file
+      mode: machine
+      auth:
+        mode: none
+    response:
+      format: binary
+      date_fields: []
+      value_fields: []
+      pagination:
+        kind: none
+      vintage_strategy: logical_release_plus_sha256
+    refresh:
+      cadence: static archived release
+      notes: Refresh only to detect a same-URL correction or archive replacement.
+    release:
+      logical_id: bls.empsit.2020-01-10.usdl-20-0010
+      representation: pdf
+      published_on: 2020-01-10
+      corrected_on: 2020-02-21
+      discovery_url: https://www.bls.gov/bls/news-release/empsit.htm
+    semantics:
+      granularity: archived release document
+      basis: contemporaneous BLS Employment Situation release
+      notes: PDF reissued to correct Table A-5; release text was unaffected.
+    tools: [get_file]
+    caveats:
+      - id: bls.archive.release_vs_revised_series
+        severity: critical
+        message: >-
+          This artifact is the archived release representation. Later revised
+          time-series data can differ; do not substitute current series values for
+          the release's tables.
+      - id: bls.archive.transport_denial
+        severity: warning
+        message: >-
+          A source-side 403 or 451 is an access-denial event, not catalog absence
+          and not proof that the release is intrinsically browser-download-only.
+          Preserve the status and redacted URL in the error receipt.
+      - id: bls.archive.reissue
+        severity: warning
+        message: >-
+          The PDF was reissued on February 21, 2020 to correct Table A-5. Preserve
+          the original release date, correction date, representation, and exact
+          content hash.
+        source_note: >-
+          Verified 2026-07-24 SHA-256:
+          e9005e394f25ad62315817fcada7bfff102442290a995a13417f82f027ceb066.
+
+  - id: bls.empsit.2020_01_10.usdl_20_0010.html
+    family: bls
+    title: The Employment Situation — December 2019 (January 10, 2020 HTML release)
+    description: >-
+      Exact HTML representation of BLS Employment Situation release USDL-20-0010,
+      published January 10, 2020; the February 21, 2020 PDF reissue corrected
+      Table A-5 while leaving the release text unaffected.
+    publisher: U.S. Bureau of Labor Statistics
+    aliases:
+      - USDL-20-0010 HTML
+      - empsit_01102020.htm
+      - December 2019 Employment Situation HTML
+    tags: [bls, employment-situation, archived-release, html, usdl-20-0010]
+    verified_on: 2026-07-24
+    history:
+      start: 2019-12-01
+      end: 2019-12-31
+      notes: Release reference month is December 2019; publication date is recorded separately.
+    frequency: one archived monthly release
+    units:
+      label: Release tables contain mixed labor-market measures
+      scale: mixed
+      seasonal_adjustment: mixed
+      annualized: false
+      unit_class: mixed_fields
+    endpoint:
+      url: https://www.bls.gov/news.release/archives/empsit_01102020.htm
+      default_params: {}
+      allowed_params: []
+    access:
+      executor: file
+      mode: machine
+      auth:
+        mode: none
+    response:
+      format: binary
+      date_fields: []
+      value_fields: []
+      pagination:
+        kind: none
+      vintage_strategy: logical_release_plus_sha256
+    refresh:
+      cadence: static archived release
+      notes: Refresh only to detect a same-URL correction or archive replacement.
+    release:
+      logical_id: bls.empsit.2020-01-10.usdl-20-0010
+      representation: html
+      published_on: 2020-01-10
+      corrected_on: 2020-02-21
+      discovery_url: https://www.bls.gov/bls/news-release/empsit.htm
+    semantics:
+      granularity: archived release document
+      basis: contemporaneous BLS Employment Situation release
+      notes: The PDF reissue corrected Table A-5; BLS states that release text was unaffected.
+    tools: [get_file]
+    caveats:
+      - id: bls.archive.release_vs_revised_series
+        severity: critical
+        message: >-
+          This artifact is the archived release representation. Later revised
+          time-series data can differ; do not substitute current series values for
+          the release's tables.
+      - id: bls.archive.transport_denial
+        severity: warning
+        message: >-
+          A source-side 403 or 451 is an access-denial event, not catalog absence
+          and not proof that the release is intrinsically browser-download-only.
+          Preserve the status and redacted URL in the error receipt.
+      - id: bls.archive.reissue
+        severity: warning
+        message: >-
+          The PDF representation was reissued on February 21, 2020 to correct
+          Table A-5; BLS states that the release text was unaffected. Preserve the
+          representation and exact content hash.
+        source_note: >-
+          Verified 2026-07-24 SHA-256:
+          0485d566de10077a3b365a900fecbf20d16de3c10f9259260028de2db2b72619.

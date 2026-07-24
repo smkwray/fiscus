@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import io
+import json
 import zipfile
 from pathlib import Path
 
@@ -8,7 +10,38 @@ import httpx
 import pytest
 
 from fiscus.errors import DatasetNotFoundError
+from fiscus.models import Z1_KIND_CODES
 from fiscus.service import FiscusService, normalize_z1_code
+
+EXPECTED_Z1_MEANINGS = {
+    "FA": "a seasonally adjusted annual-rate transaction flow",
+    "FC": "the change in an unadjusted level",
+    "FG": "a seasonally adjusted growth rate",
+    "FI": "an index",
+    "FL": "a level at period end, not seasonally adjusted",
+    "FR": "a revaluation (holding gain or loss)",
+    "FS": "a seasonal factor",
+    "FU": "a transaction flow, not seasonally adjusted",
+    "FV": "an other change in volume",
+    "LA": "a seasonally adjusted level",
+    "LM": "a market-value or current-cost level, not seasonally adjusted",
+    "PC": "a percent change in an index",
+}
+
+EXPECTED_Z1_CAVEAT_IDS = {
+    "FA": "z1.fa.saar_transaction",
+    "FC": "z1.fc.change_not_transaction",
+    "FG": "z1.fg.growth_rate",
+    "FI": "z1.fi.index",
+    "FL": "z1.fl.level_not_flow",
+    "FR": "z1.fr.revaluation_not_transaction",
+    "FS": "z1.fs.seasonal_factor",
+    "FU": "z1.fu.transaction_not_level",
+    "FV": "z1.fv.other_volume_change",
+    "LA": "z1.la.level_not_flow",
+    "LM": "z1.lm.valuation_effects",
+    "PC": "z1.pc.index_percent_change",
+}
 
 
 def _package_bytes() -> bytes:
@@ -32,6 +65,66 @@ def _package_bytes() -> bytes:
     with zipfile.ZipFile(buffer, "w") as archive:
         archive.writestr("data_dictionary/F2_2_s.txt", dictionary)
         archive.writestr("csv/F2_2_s.csv", table)
+    return buffer.getvalue()
+
+
+def _accumulation_package_bytes() -> bytes:
+    dictionary = (
+        "FC152090005.Q\tHouseholds and nonprofit organizations; net worth\tLine 1\t"
+        "S1M.r Households and nonprofit organizations\t"
+        "Millions of dollars; change in unadjusted amounts outstanding end of period\n"
+        "FU152090005.Q\tHouseholds and nonprofit organizations; net worth\tLine 2\t"
+        "S1M.r Households and nonprofit organizations\t"
+        "Millions of dollars; transactions, not seasonally adjusted\n"
+        "FR152090005.Q\tHouseholds and nonprofit organizations; net worth\tLine 11\t"
+        "S1M.r Households and nonprofit organizations\tMillions of dollars; revaluation\n"
+        "FV152090005.Q\tHouseholds and nonprofit organizations; net worth\tLine 26\t"
+        "S1M.r Households and nonprofit organizations\t"
+        "Millions of dollars; other changes in volume of assets\n"
+        "LM152090005.Q\tHouseholds and nonprofit organizations; net worth\tLine 27\t"
+        "S1M.r Households and nonprofit organizations\t"
+        "Millions of dollars; amounts outstanding end of period, market value, "
+        "not seasonally adjusted\n"
+    )
+    table = (
+        "date,FC152090005.Q,FU152090005.Q,FR152090005.Q,FV152090005.Q,LM152090005.Q\n"
+        "2025:Q3,ND,ND,ND,ND,1000\n"
+        "2025:Q4,100,20,70,10,1100\n"
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("data_dictionary/S1M_r.txt", dictionary)
+        archive.writestr("csv/S1M_r.csv", table)
+    return buffer.getvalue()
+
+
+def _all_prefix_package_bytes() -> bytes:
+    units = {
+        "FA": "Millions of dollars; seasonally adjusted annual rate",
+        "FC": "Millions of dollars; change in unadjusted level",
+        "FG": "Percent; seasonally adjusted growth rate",
+        "FI": "Index",
+        "FL": "Millions of dollars; level, not seasonally adjusted",
+        "FR": "Millions of dollars; revaluation",
+        "FS": "Millions of dollars; seasonal factor",
+        "FU": "Millions of dollars; transactions, not seasonally adjusted",
+        "FV": "Millions of dollars; other changes in volume",
+        "LA": "Millions of dollars; level, seasonally adjusted",
+        "LM": "Millions of dollars; market value or current cost, not seasonally adjusted",
+        "PC": "Percent change in index",
+    }
+    codes = [f"{kind}999000000.Q" for kind in Z1_KIND_CODES]
+    dictionary = "".join(
+        f"{code}\tExample {kind} series\tLine {index}\tF9.9 Example\t{units[kind]}\n"
+        for index, (kind, code) in enumerate(zip(Z1_KIND_CODES, codes, strict=True), start=1)
+    )
+    table = "date," + ",".join(codes) + "\n2025:Q4," + ",".join(
+        str(index) for index in range(1, len(codes) + 1)
+    ) + "\n"
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("data_dictionary/F9_9.txt", dictionary)
+        archive.writestr("csv/F9_9.csv", table)
     return buffer.getvalue()
 
 
@@ -63,10 +156,60 @@ def test_z1_kind_enforcement_refuses_mismatch(tmp_path: Path) -> None:
     with FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service:
         with pytest.raises(ValueError, match=r"refusing to present FL313020005\.Q as FU"):
             service.z1_series("FL313020005.Q", "FU")
-        with pytest.raises(ValueError, match="seasonally adjusted annualized"):
+        with pytest.raises(ValueError, match=r"refusing to present FA313020005\.Q as FU"):
             service.z1_series("FA313020005.Q", "FU")
-        with pytest.raises(ValueError, match="kind must be FL"):
+        with pytest.raises(ValueError, match=r"official Z\.1 series prefix"):
             service.z1_series("FL313020005.Q", "XX")
+    assert counters == {}
+    client.close()
+
+
+def test_z1_all_official_prefixes_preserve_semantics_and_refuse_relabeling(
+    tmp_path: Path,
+) -> None:
+    counters: dict[str, int] = {}
+    client = _client(_all_prefix_package_bytes(), counters)
+    units = {
+        "FA": "Millions of dollars; seasonally adjusted annual rate",
+        "FC": "Millions of dollars; change in unadjusted level",
+        "FG": "Percent; seasonally adjusted growth rate",
+        "FI": "Index",
+        "FL": "Millions of dollars; level, not seasonally adjusted",
+        "FR": "Millions of dollars; revaluation",
+        "FS": "Millions of dollars; seasonal factor",
+        "FU": "Millions of dollars; transactions, not seasonally adjusted",
+        "FV": "Millions of dollars; other changes in volume",
+        "LA": "Millions of dollars; level, seasonally adjusted",
+        "LM": "Millions of dollars; market value or current cost, not seasonally adjusted",
+        "PC": "Percent change in index",
+    }
+    with FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service:
+        for index, kind in enumerate(Z1_KIND_CODES):
+            wrong_kind = Z1_KIND_CODES[(index + 1) % len(Z1_KIND_CODES)]
+            with pytest.raises(ValueError, match=rf"refusing to present {kind}999000000\.Q"):
+                service.z1_series(f"{kind}999000000.Q", wrong_kind)
+        assert counters == {}
+
+        fetched = {
+            kind: service.z1_series(f"{kind}999000000.Q", kind) for kind in Z1_KIND_CODES
+        }
+
+    assert counters.get("GET") == 1
+    for kind, result in fetched.items():
+        assert result["dataset"]["title"] == f"Example {kind} series"
+        assert result["dataset"]["semantics"]["kind"] == kind
+        assert result["dataset"]["semantics"]["notes"] == EXPECTED_Z1_MEANINGS[kind]
+        assert result["dataset"]["units"]["label"] == units[kind]
+        assert EXPECTED_Z1_CAVEAT_IDS[kind] in {
+            item["id"] for item in result["caveats"] if item["severity"] == "critical"
+        }
+
+    fa_caveat = next(
+        item
+        for item in fetched["FA"]["caveats"]
+        if item["id"] == "z1.fa.saar_transaction"
+    )
+    assert "divide the published value by 4 exactly once" in fa_caveat["message"].casefold()
     client.close()
 
 
@@ -83,12 +226,55 @@ def test_z1_cataloged_series_uses_package_and_caches(tmp_path: Path) -> None:
     assert first["dataset"]["id"] == "z1.federal_checkable_deposits_level"
     assert first["preview"]["row_count"] == 2
     assert first["preview"]["date_coverage"] == {"start": "2025-12-31", "end": "2026-03-31"}
-    assert first["provenance"]["vintage"] == "z1-release:2026-06-11"
+    package_sha256 = hashlib.sha256(_package_bytes()).hexdigest()
+    assert first["provenance"]["vintage"] == (
+        f"z1-release:2026-06-11|sha256:{package_sha256}"
+    )
+    assert first["provenance"]["source_metadata"]["package_sha256"] == package_sha256
+    assert first["provenance"]["source_metadata"]["package_byte_count"] == len(
+        _package_bytes()
+    )
+    assert first["provenance"]["source_metadata"]["release_date"] == "2026-06-11"
     assert first["artifact"]["mime_type"] == "text/csv"
     assert first["artifact"] == second["artifact"]
     assert "full_data_path" not in first
     assert "manifest_path" not in first
     assert {item["id"] for item in first["caveats"]} >= {"z1.fl.level_not_flow"}
+    client.close()
+
+
+@pytest.mark.parametrize("damage", ["bytes", "manifest-json", "manifest-field"])
+def test_z1_sidecache_revalidates_and_repairs_damaged_package(
+    tmp_path: Path,
+    damage: str,
+) -> None:
+    package = _package_bytes()
+    counters: dict[str, int] = {}
+    client = _client(package, counters)
+    with FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service:
+        service.z1_series("FL313020005.Q", "FL")
+
+    zip_path = tmp_path / "packages" / "z1" / "z1-release-2026-06-11.zip"
+    manifest_path = zip_path.with_suffix(".manifest.json")
+    if damage == "bytes":
+        zip_path.write_bytes(zip_path.read_bytes() + b"tamper")
+    elif damage == "manifest-json":
+        manifest_path.write_text("{", encoding="utf-8")
+    else:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.pop("sha256")
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service:
+        repaired = service.z1_series("FL313020005.Q", "FL")
+
+    digest = hashlib.sha256(package).hexdigest()
+    assert counters["GET"] == 2
+    assert zip_path.read_bytes() == package
+    assert repaired["provenance"]["vintage"] == (
+        f"z1-release:2026-06-11|sha256:{digest}"
+    )
+    assert repaired["provenance"]["source_metadata"]["package_sha256"] == digest
     client.close()
 
 
@@ -107,4 +293,74 @@ def test_z1_uncataloged_series_synthesizes_entry_from_dictionary(tmp_path: Path)
         "z1.fl.level_not_flow",
         "z1.revisions",
     }
+    client.close()
+
+
+def test_z1_serves_complete_accumulation_identity_including_revaluation(tmp_path: Path) -> None:
+    counters: dict[str, int] = {}
+    client = _client(_accumulation_package_bytes(), counters)
+    with FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service:
+        fetched = {
+            kind: service.z1_series(f"{kind}152090005.Q", kind)
+            for kind in ("FC", "FU", "FR", "FV", "LM")
+        }
+
+    assert counters.get("GET") == 1
+    values = {
+        kind: float(result["preview"]["head"][-1]["value"]) for kind, result in fetched.items()
+    }
+    assert values["FC"] == values["FU"] + values["FR"] + values["FV"]
+    assert values["LM"] == 1100
+    assert fetched["FR"]["dataset"]["semantics"] == {
+        "kind": "FR",
+        "granularity": None,
+        "basis": None,
+        "notes": "a revaluation (holding gain or loss)",
+    }
+    assert fetched["FR"]["dataset"]["units"] == {
+        "label": "Millions of dollars; revaluation",
+        "scale": None,
+        "seasonal_adjustment": None,
+        "annualized": False,
+        "unit_class": "usd_millions",
+    }
+    assert {item["id"] for item in fetched["FR"]["caveats"]} == {
+        "z1.fr.revaluation_not_transaction",
+        "z1.revisions",
+    }
+    assert {item["id"] for item in fetched["FV"]["caveats"]} == {
+        "z1.fv.other_volume_change",
+        "z1.revisions",
+    }
+    client.close()
+
+
+def test_find_series_discovers_uncataloged_z1_revaluation_without_hardcoded_code(
+    tmp_path: Path,
+) -> None:
+    counters: dict[str, int] = {}
+    client = _client(_accumulation_package_bytes(), counters)
+    with FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service:
+        result = service.find_series(
+            "quarterly household net worth holding gains",
+            family="z1",
+        )
+
+    assert counters.get("GET") == 1
+    assert result["count"] == 0
+    assert result["uncurated_upstream"][0] == {
+        "id": "FR152090005.Q",
+        "series_id": "FR152090005.Q",
+        "title": "Households and nonprofit organizations; net worth",
+        "family": "z1",
+        "units": "Millions of dollars; revaluation",
+        "frequency": "quarterly",
+        "kind": "FR",
+        "table": "S1M.r Households and nonprofit organizations",
+        "curated": False,
+        "source": "z1_data_dictionary",
+        "release_date": "2026-06-11",
+        "tools": {"z1_series": {"code": "FR152090005.Q", "kind": "FR"}},
+    }
+    assert "no curated caveat review" in result["note"].casefold()
     client.close()

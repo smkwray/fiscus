@@ -8,8 +8,17 @@ from mcp.shared.memory import create_connected_server_and_client_session
 from mcp.types import BlobResourceContents
 from pydantic import AnyUrl
 
-from fiscus.mcp_server import create_server
+from fiscus.mcp_server import _issue_reporting_instruction, create_server
 from fiscus.service import FiscusService
+
+
+def test_mcp_issue_reporting_instruction_resolves_live_state_file() -> None:
+    instruction = _issue_reporting_instruction()
+    expected = Path(__file__).parents[1] / "do" / "state.md"
+
+    assert str(expected) in instruction
+    assert "missing capability" in instruction
+    assert "before ending the turn" in instruction
 
 
 def test_mcp_lists_core_tools_and_serves_artifact_resource(tmp_path: Path) -> None:
@@ -41,6 +50,8 @@ def test_mcp_lists_core_tools_and_serves_artifact_resource(tmp_path: Path) -> No
                     "soma_holdings",
                     "provenance",
                 }
+                get_series_tool = next(tool for tool in listed.tools if tool.name == "get_series")
+                assert "vintage_as_of" in get_series_tool.inputSchema["properties"]
                 result = await client.call_tool(
                     "find_series",
                     {"query": "TGA Wednesday level", "limit": 2},
@@ -49,14 +60,11 @@ def test_mcp_lists_core_tools_and_serves_artifact_resource(tmp_path: Path) -> No
                 assert result.structuredContent["results"][0]["id"] == "fred.wdtgal"
 
                 templates = await client.list_resource_templates()
-                assert {
-                    str(template.uriTemplate) for template in templates.resourceTemplates
-                } == {"fiscus-cache://artifact/{cache_key}"}
+                assert {str(template.uriTemplate) for template in templates.resourceTemplates} == {
+                    "fiscus-cache://artifact/{cache_key}"
+                }
                 resource = await client.read_resource(
-                    AnyUrl(
-                        "fiscus-cache://artifact/"
-                        + stored.descriptor.cache_key[:20]
-                    )
+                    AnyUrl("fiscus-cache://artifact/" + stored.descriptor.cache_key[:20])
                 )
                 assert len(resource.contents) == 1
                 content = resource.contents[0]

@@ -29,7 +29,12 @@ uvx fiscus fiscaldata-query fiscaldata.dts_operating_cash_balance \
   --max-pages 2
 ```
 
-Set `FRED_API_KEY` to use the official FRED observations API instead of the public graph CSV path, `BEA_API_KEY` for BEA national-accounts tables (required), and `BLS_API_KEY` to raise BLS query limits (optional). Keys are read from environment variables only; the MCP server can be launched with `uv run --env-file` pointing at a private env file.
+Set `FRED_API_KEY` to use the official FRED observations API instead of the public graph CSV path and to request historical ALFRED information snapshots, `BEA_API_KEY` for BEA national-accounts tables (required), and `BLS_API_KEY` to raise BLS query limits (optional). Keys are read from environment variables only; the MCP server can be launched with `uv run --env-file` pointing at a private env file.
+
+For a FRED series, `--vintage-as-of YYYY-MM-DD` selects the information available
+to ALFRED on one closed past date. `--start` and `--end` remain inclusive
+observation-date bounds; they are never treated as vintage dates. Today and future
+information dates are rejected because today's information set remains mutable.
 
 ## MCP server
 
@@ -61,10 +66,10 @@ Cache-backed tool results contain an artifact descriptor, not a server-local pat
 
 ```text
 fiscus find-series QUERY
-fiscus get-series DATASET_ID [--start DATE] [--end DATE]
+fiscus get-series DATASET_ID [--start DATE] [--end DATE] [--vintage-as-of DATE]
 fiscus fiscaldata-query DATASET_ID [--param KEY=VALUE] [--max-pages N]
 fiscus get-file DATASET_ID
-fiscus z1-series CODE {FL|FU|LM} [--start DATE] [--end DATE]
+fiscus z1-series CODE KIND [--start DATE] [--end DATE]
 fiscus soma-holdings [--asof DATE] [--cusip CUSIP]
 fiscus source-caveats DATASET_ID
 fiscus provenance CACHE_KEY
@@ -78,9 +83,16 @@ Call `find-series` before a fetch command. Dataset identifiers are curated catal
 
 - **Uncataloged passthrough:** any FRED or BLS series is fetchable as `fred.<SERIES_ID>` / `bls.<SERIES_ID>`. Keyed FRED requests derive units, seasonal adjustment, annualization, and a conservative `unit_class` from official series metadata. Detected annual-rate series receive an explicit interpretation caveat; the keyless FRED graph route and current BLS data route report annualization as unknown and warn the caller to verify before treating observations as period flows. Every passthrough remains marked "uncataloged — no curated caveat review." The catalog is for caveats, not coverage.
 - **Upstream search fallback:** when `find-series` has no complete catalog match, it appends candidates from FRED's own search (requires `FRED_API_KEY`), clearly marked uncurated, so an empty result is a lead rather than a dead end.
+- **Curated release files:** Census vintage files and archived BLS releases carry a
+  logical release id and representation. Their immutable source identity appends the
+  SHA-256 of exact downloaded bytes, so a correction at the same URL creates a new
+  revision while ETag and Last-Modified remain transport metadata.
+- **Z.1 package discovery:** `find-series QUERY --family z1` searches the current official package data dictionary without a key and returns the exact `z1-series CODE KIND` call for uncataloged matches.
 - **Local artifacts:** private overlay entries can register files already on disk via the `local_file` executor (`endpoint.local_path`) — served in place with a content-hash provenance block, never copied. See `catalog/CONTRIBUTING.md`.
 
-`z1-series` additionally accepts any mnemonic from the official Z.1 CSV package (including FRED-style `BOGZ1` aliases) and refuses to present a level (FL), transaction flow (FU), or market-value level (LM) as one another; one package download per release serves every series, and uncataloged mnemonics are labeled from the package's own data dictionary. `soma-holdings` resolves the latest weekly snapshot date before consulting the cache, so "latest" never freezes to a stale snapshot. `provenance` re-emits the immutable manifest and artifact descriptor for a full cache key or unique prefix.
+`z1-series` additionally accepts any mnemonic from the official Z.1 CSV package (including FRED-style `BOGZ1` aliases) and enforces the mnemonic's official series-type prefix, including transactions, levels, changes, revaluations, other volume changes, seasonal factors, growth rates, and indexes. One package download per release serves every series, and uncataloged mnemonics are labeled from the package's own data dictionary. `soma-holdings` resolves the latest weekly snapshot date before consulting the cache, so "latest" never freezes to a stale snapshot. `provenance` re-emits the immutable manifest and artifact descriptor for a full cache key or unique prefix.
+
+For `z1-series`, `KIND` must be the mnemonic's matching official prefix: `FA`, `FC`, `FG`, `FI`, `FL`, `FR`, `FS`, `FU`, `FV`, `LA`, `LM`, or `PC`. The deliberate redundancy prevents one economic concept from being relabeled as another.
 
 ## Return convention (v0.2)
 
@@ -117,13 +129,18 @@ with FiscusService() as fiscus:
 
 `read_bytes`, `iter_csv_rows`, `provenance`, and `cache export` accept either the full key or a unique hexadecimal prefix of at least 12 characters. `iter_csv_rows` rejects non-CSV artifacts instead of guessing how to parse a workbook or archive.
 
+Expected failures have stable Python/CLI codes. In particular, HTTP 404/410 is
+`source_removed`, HTTP 403/451 is `source_access_denied`, and a statically declared
+nonmachine route is `browser_download_only`. A transient access denial is not
+silently promoted into a permanent catalog fact.
+
 ### Cache lifetime versus caller-owned files
 
 The cache defaults to the platform's device-local cache directory and can be relocated with `FISCUS_DATA_DIR`. Its quiescent `cache/v2` surface is one `fiscus.sqlite3` file; payloads, manifests, and latest pointers are rows in that database. SQLite uses rollback-journal `DELETE` mode, so a journal may exist during a write but no persistent WAL/SHM sidecars or artifact directories remain at rest.
 
 The cache is durable across fiscus processes but is still a cache: operating-system cleanup, an explicit user deletion, or a replaced device can remove it. `cache export` / `export_artifact` creates a caller-owned file at the requested destination when archival or handoff durability matters. Conversely, a `local_file` catalog entry already points to caller-owned content, so its response keeps the real in-place `full_data_path` and `manifest_path: null` and never enters SQLite.
 
-`--refresh` bypasses the latest pointer and re-reads the source. The response is stored under the source vintage reported by FRED or HTTP metadata, with retrieval UTC as a fallback; bytes already stored under one dataset/canonical-params/vintage identity are never mutated.
+`--refresh` bypasses the latest pointer and re-reads the source. Current FRED responses use HTTP validators or retrieval UTC as immutable identity; their default real-time dates remain metadata. Historical FRED requests use `alfred-as-of:DATE`, and the date also enters canonical request parameters. Bytes already stored under one dataset/canonical-params/vintage identity are never mutated.
 
 ### Legacy v1 migration
 

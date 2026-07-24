@@ -5,20 +5,41 @@ import json
 from pathlib import Path
 
 from fiscus.cache import CacheManager
-from fiscus.cli import main
+from fiscus.cli import build_parser, main
 
 
 def test_catalog_lint_cli(capsys) -> None:
     assert main(["catalog", "lint"]) == 0
     output = json.loads(capsys.readouterr().out)
     assert output["ok"] is True
-    assert output["entries"] == 29
+    assert output["entries"] == 33
 
 
 def test_find_series_cli(capsys, tmp_path: Path) -> None:
     assert main(["--data-dir", str(tmp_path), "find-series", "MSPD CUSIP"]) == 0
     output = json.loads(capsys.readouterr().out)
     assert output["results"][0]["id"] == "fiscaldata.mspd_table_3_market"
+
+
+def test_get_series_cli_accepts_alfred_information_date() -> None:
+    args = build_parser().parse_args(
+        [
+            "get-series",
+            "fred.wdtgal",
+            "--start",
+            "2020-01-01",
+            "--end",
+            "2020-12-31",
+            "--vintage-as-of",
+            "2021-01-15",
+        ]
+    )
+    assert args.vintage_as_of == "2021-01-15"
+
+
+def test_cli_prints_stable_error_code(capsys, tmp_path: Path) -> None:
+    assert main(["--data-dir", str(tmp_path), "get-file", "missing.dataset"]) == 2
+    assert "fiscus [catalog_absent]:" in capsys.readouterr().err
 
 
 def test_cache_export_cli_writes_caller_owned_file(capsys, tmp_path: Path) -> None:

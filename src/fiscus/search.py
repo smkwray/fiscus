@@ -5,7 +5,7 @@ import unicodedata
 from collections import defaultdict
 from typing import Any
 
-from fiscus.models import CatalogEntry
+from fiscus.models import CatalogEntry, ExecutorKind
 
 TOKEN_RE = re.compile(r"[a-z0-9]+")
 
@@ -160,7 +160,7 @@ def _score_entry(
 
 
 def _result(score: float, entry: CatalogEntry, reasons: list[str]) -> dict[str, Any]:
-    return {
+    result = {
         "id": entry.id,
         "title": entry.title,
         "family": entry.family,
@@ -174,7 +174,29 @@ def _result(score: float, entry: CatalogEntry, reasons: list[str]) -> dict[str, 
         "access_mode": entry.access.mode.value,
         "tools": [tool.value for tool in entry.tools],
         "verified_on": entry.verified_on.isoformat(),
+        "vintage_support": vintage_support(entry.access.executor, entry.family),
         "matched_on": reasons,
+    }
+    if entry.release is not None:
+        result["release"] = entry.release.model_dump(mode="json")
+    return result
+
+
+def vintage_support(executor: ExecutorKind, family: str) -> dict[str, Any]:
+    if executor == ExecutorKind.FRED:
+        return {
+            "supported": True,
+            "mode": "alfred_as_of",
+            "parameter": "vintage_as_of",
+            "requires_env": "FRED_API_KEY",
+            "coverage": "series-specific; not preflighted",
+            "semantics": "information available to ALFRED as of a closed past date",
+        }
+    return {
+        "supported": False,
+        "reason": (
+            f"{family} does not expose a FRED/ALFRED historical information-date route"
+        ),
     }
 
 

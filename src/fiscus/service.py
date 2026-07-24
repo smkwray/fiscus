@@ -17,7 +17,10 @@ from fiscus.csvutil import rows_to_csv_bytes
 from fiscus.errors import (
     BrowserDownloadOnlyError,
     DatasetNotFoundError,
+    FiscusError,
+    InvalidVintageError,
     UnsupportedToolError,
+    UnsupportedVintageError,
 )
 from fiscus.executors import (
     BlsExecutor,
@@ -33,6 +36,7 @@ from fiscus.executors.base import FetchResult
 from fiscus.executors.z1 import Z1_PACKAGE_URL, Z1Loaded
 from fiscus.http import HttpRequester
 from fiscus.models import (
+    Z1_KIND_CODES,
     AccessMode,
     AccessSpec,
     AuthMode,
@@ -53,6 +57,7 @@ from fiscus.models import (
 )
 from fiscus.return_format import build_fetch_response, date_coverage, preview_rows
 from fiscus.search import find_series as search_catalog
+from fiscus.search import vintage_support
 from fiscus.unit_inference import infer_passthrough_units
 
 FILTER_DATE = re.compile(
@@ -60,19 +65,22 @@ FILTER_DATE = re.compile(
 )
 
 Z1_KIND_MEANINGS = {
-    "FL": "a level of amounts outstanding at period end",
-    "FU": "an unadjusted transaction flow",
-    "LM": "a market-value level",
+    "FA": "a seasonally adjusted annual-rate transaction flow",
+    "FC": "the change in an unadjusted level",
+    "FG": "a seasonally adjusted growth rate",
+    "FI": "an index",
+    "FL": "a level at period end, not seasonally adjusted",
+    "FR": "a revaluation (holding gain or loss)",
+    "FS": "a seasonal factor",
+    "FU": "a transaction flow, not seasonally adjusted",
+    "FV": "an other change in volume",
+    "LA": "a seasonally adjusted level",
+    "LM": "a market-value or current-cost level, not seasonally adjusted",
+    "PC": "a percent change in an index",
 }
 
-Z1_REJECTED_PREFIXES = {
-    "FA": "FA is a seasonally adjusted annualized transaction flow; request the FU series instead",
-    "FR": "FR is a revaluation series, outside the FL/FU/LM surface",
-    "FV": "FV is an other-volume-changes series, outside the FL/FU/LM surface",
-    "FC": "FC is a change series, outside the FL/FU/LM surface",
-    "LA": "LA is a seasonally adjusted level, outside the FL/FU/LM surface",
-    "FI": "FI is a growth-rate series, outside the FL/FU/LM surface",
-}
+if set(Z1_KIND_MEANINGS) != set(Z1_KIND_CODES):  # pragma: no cover - import-time invariant
+    raise RuntimeError("Z.1 kind meanings must cover the official series-prefix taxonomy")
 
 
 def default_user_agent() -> str:
@@ -173,7 +181,7 @@ class FiscusService:
             "all query tokens matched" in result.get("matched_on", []) for result in results
         )
         if not complete_match:
-            upstream, note = self._upstream_search(query, limit)
+            upstream, note = self._upstream_search(query, limit, family=family)
             if results:
                 note = (
                     "Catalog matches above are partial (no entry matched every query term). " + note
@@ -188,8 +196,10 @@ class FiscusService:
         *,
         start: str | date | None = None,
         end: str | date | None = None,
+        vintage_as_of: str | date | None = None,
         refresh: bool = False,
     ) -> dict[str, Any]:
+        vintage_date = _closed_past_vintage(vintage_as_of)
         try:
             entry = self.catalog.get(dataset_id)
         except DatasetNotFoundError:
@@ -202,6 +212,11 @@ class FiscusService:
                 f"{entry.id} is not served by get_series; its catalog tools are "
                 f"{[tool.value for tool in entry.tools]}"
             )
+        if vintage_date and entry.access.executor != ExecutorKind.FRED:
+            raise UnsupportedVintageError(
+                f"{entry.id} cannot serve vintage_as_of; historical information dates "
+                "are supported only for FRED-backed series"
+            )
 
         start_date = parse_date(start)
         end_date = parse_date(end)
@@ -209,27 +224,52 @@ class FiscusService:
             raise ValueError("end must not precede start")
         start_iso = start_date.isoformat() if start_date else None
         end_iso = end_date.isoformat() if end_date else None
+        vintage_iso = vintage_date.isoformat() if vintage_date else None
         request_params: dict[str, Any] = {"start": start_iso, "end": end_iso}
 
         if entry.access.executor == ExecutorKind.FRED:
             auth_env = entry.access.auth.env_var
-            request_params["source_mode"] = (
-                "fred_api_json"
-                if auth_env and os.environ.get(auth_env) and entry.endpoint.api_url
-                else "fred_graph_csv"
-            )
-            executor = self.fred
+            if vintage_iso:
+                request_params.update(
+                    {
+                        "source_mode": "alfred_api_json",
+                        "vintage_as_of": vintage_iso,
+                    }
+                )
+            else:
+                request_params["source_mode"] = (
+                    "fred_api_json"
+                    if auth_env and os.environ.get(auth_env) and entry.endpoint.api_url
+                    else "fred_graph_csv"
+                )
+            def fetch() -> FetchResult:
+                return self.fred.fetch(
+                    entry,
+                    start=start_iso,
+                    end=end_iso,
+                    vintage_as_of=vintage_iso,
+                )
+
         elif entry.access.executor == ExecutorKind.BLS:
-            executor = self.bls
+            def fetch() -> FetchResult:
+                return self.bls.fetch(entry, start=start_iso, end=end_iso)
+
         else:
-            executor = self.json_api
+            def fetch() -> FetchResult:
+                return self.json_api.fetch(entry, start=start_iso, end=end_iso)
 
-        def fetch() -> FetchResult:
-            return executor.fetch(entry, start=start_iso, end=end_iso)
-
-        context = CaveatContext(start=start_date, end=end_date)
+        context = CaveatContext(
+            start=start_date,
+            end=end_date,
+            params={"vintage_as_of": vintage_iso} if vintage_iso else {},
+        )
+        response_entry = (
+            entry.model_copy(update={"caveats": [*entry.caveats, _ALFRED_SNAPSHOT_CAVEAT]})
+            if vintage_iso
+            else entry
+        )
         return self._cached_fetch(
-            entry,
+            response_entry,
             canonical_params(request_params),
             refresh=refresh,
             caveat_context=context,
@@ -332,13 +372,11 @@ class FiscusService:
         kind_upper = str(kind).strip().upper()
         if kind_upper not in Z1_KIND_MEANINGS:
             raise ValueError(
-                "kind must be FL (level), FU (transaction flow), or LM (market-value level)"
+                "kind must be an official Z.1 series prefix: " + ", ".join(Z1_KIND_CODES)
             )
         prefix = canonical[:2]
-        if prefix in Z1_REJECTED_PREFIXES:
-            raise ValueError(f"{canonical} is not served: {Z1_REJECTED_PREFIXES[prefix]}")
         if prefix not in Z1_KIND_MEANINGS:
-            raise ValueError(f"{canonical} does not carry a supported Z.1 prefix (FL, FU, or LM)")
+            raise ValueError(f"{canonical} does not carry an official supported Z.1 series prefix")
         if prefix != kind_upper:
             raise ValueError(
                 f"refusing to present {canonical} as {kind_upper}: it is "
@@ -385,7 +423,7 @@ class FiscusService:
                         "table": loaded.meta.table,
                         "units": loaded.meta.units,
                     },
-                    "http": loaded.package_metadata,
+                    **loaded.package_metadata,
                 },
             ),
         )
@@ -438,10 +476,9 @@ class FiscusService:
             if cached is not None:
                 return build_fetch_response(entry, cached, binding_caveats(entry, context))
         result, content, data_file = self.file.fetch(entry)
-        if data_file == "data.csv":
-            data = rows_to_csv_bytes(result.rows, preferred_fields=entry.response.date_fields)
-        else:
-            data = content
+        # Remote file artifacts retain the exact downloaded representation. CSV
+        # parsing is for preview and validation only; it must not rewrite source bytes.
+        data = content
         coverage = date_coverage(result.rows, entry.response.date_fields)
         manifest = {
             "source_url": result.source_url,
@@ -514,8 +551,32 @@ class FiscusService:
             "sha256_verified": True,
         }
 
-    def _upstream_search(self, query: str, limit: int) -> tuple[list[dict[str, Any]], str]:
+    def _upstream_search(
+        self,
+        query: str,
+        limit: int,
+        *,
+        family: str | None,
+    ) -> tuple[list[dict[str, Any]], str]:
         """Source-side search when the curated catalog has no match."""
+        if family == "z1":
+            try:
+                upstream = self.z1.search_series(query, limit)
+            except FiscusError as exc:
+                return [], f"Z.1 package data-dictionary search failed: {exc}"
+            note = (
+                "No complete curated catalog match; results below are from the current "
+                "official Z.1 package data dictionary and carry no curated caveat review. "
+                "Fetch with z1_series using the code and matching kind shown."
+                if upstream
+                else (
+                    "No complete curated match and the Z.1 package data dictionary "
+                    "returned nothing."
+                )
+            )
+            return upstream, note
+        if family not in {None, "fred"}:
+            return [], f"No curated catalog match or source-side search for family {family!r}."
         api_key = os.environ.get("FRED_API_KEY")
         if not api_key:
             return [], (
@@ -535,6 +596,7 @@ class FiscusService:
                 "observation_start": item.get("observation_start", ""),
                 "curated": False,
                 "source": "fred_search",
+                "vintage_support": vintage_support(ExecutorKind.FRED, "fred"),
             }
             for item in found
             if item.get("id")
@@ -759,6 +821,16 @@ _FRED_DOT_CAVEAT = Caveat(
     ),
 )
 
+_ALFRED_SNAPSHOT_CAVEAT = Caveat(
+    id="fred.alfred_information_snapshot",
+    severity=Severity.WARNING,
+    message=(
+        "This artifact is an ALFRED information snapshot as of the requested closed past "
+        "date. It is not proof of the exact source-origin file or publication instant; "
+        "ALFRED availability can follow the source release and may use fallback evidence."
+    ),
+)
+
 _BLS_WINDOW_CAVEAT = Caveat(
     id="bls.year_window_limit",
     severity=Severity.WARNING,
@@ -779,6 +851,26 @@ def _safe_date(value: str | None) -> date | None:
         return None
 
 
+def _closed_past_vintage(value: str | date | None) -> date | None:
+    if value is None:
+        return None
+    try:
+        parsed = parse_date(value)
+    except (TypeError, ValueError) as exc:
+        raise InvalidVintageError(
+            "vintage_as_of must be an ISO date in YYYY-MM-DD form"
+        ) from exc
+    if parsed is None:  # pragma: no cover - guarded by value is not None
+        return None
+    today_utc = datetime.now(UTC).date()
+    if parsed >= today_utc:
+        raise InvalidVintageError(
+            f"vintage_as_of must be strictly earlier than the current UTC date "
+            f"{today_utc.isoformat()}; omit it for current data"
+        )
+    return parsed
+
+
 def normalize_z1_code(code: str) -> str:
     """Canonicalize Z.1 mnemonics: BOGZ1FL313020005Q and FL313020005 -> FL313020005.Q."""
     cleaned = code.strip().upper().replace(" ", "")
@@ -795,6 +887,33 @@ def normalize_z1_code(code: str) -> str:
 
 
 _Z1_SYNTHETIC_CAVEATS = {
+    "FA": Caveat(
+        id="z1.fa.saar_transaction",
+        severity=Severity.CRITICAL,
+        message=(
+            "FA is a seasonally adjusted annual-rate transaction flow. Divide the published "
+            "value by 4 exactly once to estimate the transaction during the quarter; do not "
+            "sum four published quarterly SAAR observations."
+        ),
+    ),
+    "FC": Caveat(
+        id="z1.fc.change_not_transaction",
+        severity=Severity.CRITICAL,
+        message=(
+            "FC is the change in an unadjusted level. It can include transactions, "
+            "revaluations, and other changes in volume; do not label it as transactions."
+        ),
+    ),
+    "FG": Caveat(
+        id="z1.fg.growth_rate",
+        severity=Severity.CRITICAL,
+        message="FG is a seasonally adjusted growth rate, not a dollar level or flow.",
+    ),
+    "FI": Caveat(
+        id="z1.fi.index",
+        severity=Severity.CRITICAL,
+        message="FI is an index. Do not interpret its observations as dollar levels or flows.",
+    ),
     "FL": Caveat(
         id="z1.fl.level_not_flow",
         severity=Severity.CRITICAL,
@@ -811,13 +930,45 @@ _Z1_SYNTHETIC_CAVEATS = {
             "corresponding FL series for stocks."
         ),
     ),
+    "FR": Caveat(
+        id="z1.fr.revaluation_not_transaction",
+        severity=Severity.CRITICAL,
+        message=(
+            "FR is a revaluation (holding gain or loss), not a transaction flow or the "
+            "total change in the corresponding level."
+        ),
+    ),
+    "FS": Caveat(
+        id="z1.fs.seasonal_factor",
+        severity=Severity.CRITICAL,
+        message="FS is a seasonal factor, not a transaction flow or a level.",
+    ),
+    "FV": Caveat(
+        id="z1.fv.other_volume_change",
+        severity=Severity.CRITICAL,
+        message=(
+            "FV records other changes in volume, such as discontinuities or breaks. Do not "
+            "label it as transactions or holding gains."
+        ),
+    ),
+    "LA": Caveat(
+        id="z1.la.level_not_flow",
+        severity=Severity.CRITICAL,
+        message="LA is a seasonally adjusted level. Do not present its change as transactions.",
+    ),
     "LM": Caveat(
         id="z1.lm.valuation_effects",
         severity=Severity.CRITICAL,
         message=(
-            "LM is a market-value level. Its change includes valuation and other adjustments; "
-            "do not present the level change as purchases or transaction flow."
+            "LM is a market-value or current-cost level, not seasonally adjusted. Its change "
+            "includes valuation and other adjustments; do not present the level change as "
+            "purchases or transaction flow."
         ),
+    ),
+    "PC": Caveat(
+        id="z1.pc.index_percent_change",
+        severity=Severity.CRITICAL,
+        message="PC is a percent change in an index, not an index level or a dollar flow.",
     ),
 }
 
@@ -844,10 +995,13 @@ def _synthetic_z1_entry(code: str, loaded: Z1Loaded) -> CatalogEntry:
     except ValueError:
         history_start = verified
     units_label = loaded.meta.units or "see Z.1 data dictionary"
-    unit_class = (
-        "usd_millions_nsa" if "millions of dollars" in units_label.casefold() else "not_saar"
-    )
-    frequency = "annual" if code.endswith(".A") else "quarterly, end of period"
+    units_lower = units_label.casefold()
+    annualized = "annual rate" in units_lower
+    if "millions of dollars" in units_lower:
+        unit_class = "usd_millions_saar" if annualized else "usd_millions"
+    else:
+        unit_class = "not_saar"
+    frequency = "annual" if code.endswith(".A") else "quarterly"
     kind = code[:2]
     return CatalogEntry(
         id=f"z1.{code.casefold().replace('.', '_')}",
@@ -866,7 +1020,7 @@ def _synthetic_z1_entry(code: str, loaded: Z1Loaded) -> CatalogEntry:
             notes="Boundary observed in the current package, not independently verified.",
         ),
         frequency=frequency,
-        units=UnitSpec(label=units_label, unit_class=unit_class),
+        units=UnitSpec(label=units_label, annualized=annualized, unit_class=unit_class),
         endpoint=EndpointSpec(url=Z1_PACKAGE_URL, series_id=code),
         access=AccessSpec(executor=ExecutorKind.Z1, auth=AuthSpec()),
         response=ResponseSpec(
