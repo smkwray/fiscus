@@ -98,6 +98,21 @@ def _accumulation_package_bytes() -> bytes:
     return buffer.getvalue()
 
 
+def _exact_discovery_package_bytes() -> bytes:
+    codes = ("FL154090005.Q", "FU154090005.Q", "FV108090105.Q")
+    dictionary = "".join(
+        f"{code}\tExact {code[:2]} series\tLine {index}\tF9.9 Exact\t"
+        "Millions of dollars; source-reported metadata\n"
+        for index, code in enumerate(codes, start=1)
+    )
+    table = "date," + ",".join(codes) + "\n2026:Q1,1,2,3\n"
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("data_dictionary/F9_9.txt", dictionary)
+        archive.writestr("csv/F9_9.csv", table)
+    return buffer.getvalue()
+
+
 def _all_prefix_package_bytes() -> bytes:
     units = {
         "FA": "Millions of dollars; seasonally adjusted annual rate",
@@ -363,4 +378,61 @@ def test_find_series_discovers_uncataloged_z1_revaluation_without_hardcoded_code
         "tools": {"z1_series": {"code": "FR152090005.Q", "kind": "FR"}},
     }
     assert "no curated caveat review" in result["note"].casefold()
+    client.close()
+
+
+def test_find_series_resolves_exact_z1_mnemonics_before_fuzzy_scoring(tmp_path: Path) -> None:
+    counters: dict[str, int] = {}
+    client = _client(_exact_discovery_package_bytes(), counters)
+    queries = {
+        "FL154090005": "FL154090005.Q",
+        "FU154090005.Q": "FU154090005.Q",
+        "BOGZ1FV108090105Q": "FV108090105.Q",
+    }
+    with FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service:
+        found = {
+            query: service.find_series(query, family="z1") for query in queries
+        }
+
+    assert counters.get("GET") == 1
+    for query, code in queries.items():
+        response = found[query]
+        assert response["count"] == 0
+        assert response["results"] == []
+        assert len(response["uncurated_upstream"]) == 1
+        result = response["uncurated_upstream"][0]
+        assert result["id"] == code
+        assert result["curated"] is False
+        assert result["source"] == "z1_data_dictionary"
+        assert result["tools"] == {"z1_series": {"code": code, "kind": code[:2]}}
+        assert "history_start" not in result
+        assert "units" not in result
+        assert "verified_on" not in result
+    client.close()
+
+
+def test_find_series_does_not_substitute_for_an_absent_exact_z1_mnemonic(tmp_path: Path) -> None:
+    counters: dict[str, int] = {}
+    client = _client(_exact_discovery_package_bytes(), counters)
+    with FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service:
+        result = service.find_series("FV105013665.Q", family="z1")
+
+    assert counters.get("GET") == 1
+    assert result["count"] == 0
+    assert result["results"] == []
+    assert result["uncurated_upstream"] == []
+    assert "data dictionary returned nothing" in result["note"]
+    client.close()
+
+
+def test_find_series_keeps_free_text_z1_discovery_unchanged(tmp_path: Path) -> None:
+    counters: dict[str, int] = {}
+    client = _client(_accumulation_package_bytes(), counters)
+    with FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service:
+        result = service.find_series("quarterly household net worth holding gains", family="z1")
+
+    assert counters.get("GET") == 1
+    assert result["results"] == []
+    assert result["uncurated_upstream"][0]["id"] == "FR152090005.Q"
+    assert result["uncurated_upstream"][0]["units"] == "Millions of dollars; revaluation"
     client.close()

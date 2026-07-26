@@ -37,6 +37,16 @@ def test_get_series_cli_accepts_alfred_information_date() -> None:
     assert args.vintage_as_of == "2021-01-15"
 
 
+def test_bea_nipa_table_cli_requires_explicit_years() -> None:
+    args = build_parser().parse_args(
+        ["bea-nipa-table", "T10106", "Q", "2023", "2024"]
+    )
+    assert args.table_id == "T10106"
+    assert args.frequency == "Q"
+    assert args.start_year == 2023
+    assert args.end_year == 2024
+
+
 def test_cli_prints_stable_error_code(capsys, tmp_path: Path) -> None:
     assert main(["--data-dir", str(tmp_path), "get-file", "missing.dataset"]) == 2
     assert "fiscus [catalog_absent]:" in capsys.readouterr().err

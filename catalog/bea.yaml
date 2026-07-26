@@ -16,7 +16,7 @@ entries:
     verified_on: 2026-07-13
     history:
       start: 1947-03-31
-      notes: NIPA quarterly estimates begin 1947Q1.
+      notes: Earliest verified period returned for any table line at quarterly frequency. Individual LineNumber/SeriesCode histories differ, and annual line starts differ from quarterly; use response coverage.by_line.
     frequency: quarterly
     units:
       label: Millions of chained 2017 dollars, seasonally adjusted annual rate
@@ -31,9 +31,9 @@ entries:
         datasetname: NIPA
         TableName: T10106
         Frequency: Q
-        Year: X
         ResultFormat: json
-      allowed_params: [Year, Frequency]
+        ShowMillions: N
+      allowed_params: []
       api_key_param: UserID
     access:
       executor: json_api
@@ -58,7 +58,7 @@ entries:
       granularity: table line (LineNumber, SeriesCode) by period
       basis: chained-dollar quantity estimates
       notes: Filter rows by SeriesCode or LineNumber before use; the table is not one series.
-    tools: [get_series]
+    tools: [bea_nipa_table]
     caveats:
       - id: bea.saar_units
         severity: critical
@@ -75,12 +75,12 @@ entries:
       - id: bea.datavalue_commas
         severity: critical
         message: DataValue strings contain comma thousands separators; strip commas before numeric parsing.
-      - id: bea.chained_nonadditive
-        severity: warning
-        message: Chained-dollar components do not sum to chained-dollar aggregates away from the reference year; do not force additivity.
-      - id: bea.table_rows
-        severity: warning
-        message: The response is the whole table (one row per line per period). Select the intended SeriesCode or LineNumber; a naive read mixes GDP with its components.
+      - id: bea.nipa_quantity_chained_concepts
+        severity: critical
+        message: Quantity indexes and chained-dollar values produce the same percent-change measures, apart from rounding, but they are not interchangeable level concepts. Chained-dollar components are generally nonadditive away from the reference year; do not substitute one metric for the other when a dollar level, share, aggregation, or contribution is required.
+      - id: bea.nipa_observed_rows
+        severity: critical
+        message: BEA returns only the observations present for each table line. Earlier periods may be absent with no blank placeholder, and different lines in one table may begin in different periods. Do not infer a line's history from the table-wide date range; inspect `coverage.by_line` for the selected `LineNumber`/`SeriesCode`.
 
   - id: bea.pce_underlying_u20405
     family: bea

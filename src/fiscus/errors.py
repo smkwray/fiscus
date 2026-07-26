@@ -43,16 +43,58 @@ class UnsupportedVintageError(FiscusError):
     code = "unsupported_vintage"
 
 
+class VintageHistoryAbsentError(UnsupportedVintageError):
+    """A series exists but has no realtime history at the requested source."""
+
+    code = "vintage_history_absent"
+
+
+class VintagePrecedesHistoryError(UnsupportedVintageError):
+    """A requested information date predates the series' first realtime vintage."""
+
+    code = "vintage_precedes_history"
+
+
 class BrowserDownloadOnlyError(FiscusError):
     """A source is intentionally labeled as browser-download-only."""
 
     code = "browser_download_only"
 
 
+class InvalidRequestError(FiscusError):
+    """A public request is malformed and was rejected before source access."""
+
+    code = "invalid_request"
+
+
 class SourceRequestError(FiscusError):
     """A source request failed after retries or returned invalid data."""
 
     code = "source_request_failed"
+
+
+class SourceSchemaChangedError(SourceRequestError):
+    """A successful source response no longer matches the expected safe schema."""
+
+    code = "source_schema_changed"
+
+
+class InvalidCredentialError(SourceRequestError):
+    """A configured source credential was rejected by its provider."""
+
+    code = "credential_rejected"
+
+
+class SourceQueryRejectedError(SourceRequestError):
+    """A source API rejected a query and supplied a classified explanation."""
+
+    code = "source_query_rejected"
+
+
+class SourceIdentifierNotFoundError(SourceQueryRejectedError):
+    """A requested source identifier does not exist."""
+
+    code = "source_identifier_absent"
 
 
 class SourceRemovedError(SourceRequestError):

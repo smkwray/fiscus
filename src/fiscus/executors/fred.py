@@ -3,10 +3,18 @@ from __future__ import annotations
 import csv
 import io
 import os
+import re
 from datetime import UTC, date, datetime
 from typing import Any
 
-from fiscus.errors import MissingKeyError, SourceRequestError
+from fiscus.errors import (
+    InvalidCredentialError,
+    MissingKeyError,
+    SourceIdentifierNotFoundError,
+    SourceRequestError,
+    VintageHistoryAbsentError,
+    VintagePrecedesHistoryError,
+)
 from fiscus.executors.base import FetchResult
 from fiscus.http import (
     HttpRequester,
@@ -21,7 +29,9 @@ FRED_POLICY = RetryPolicy(attempts=3, backoff_seconds=0.5, politeness_delay_seco
 
 FRED_SERIES_INFO_URL = "https://api.stlouisfed.org/fred/series"
 FRED_SEARCH_URL = "https://api.stlouisfed.org/fred/series/search"
+FRED_VINTAGE_DATES_URL = "https://api.stlouisfed.org/fred/series/vintagedates"
 ALFRED_PAGE_LIMIT = 100_000
+FRED_ERROR_STATUS = (400,)
 
 
 class FredExecutor:
@@ -44,12 +54,11 @@ class FredExecutor:
         if vintage_as_of:
             if not api_key:
                 raise MissingKeyError(
-                    f"{entry.id} requires environment variable FRED_API_KEY for vintage_as_of"
+                    f"FRED_API_KEY is unset; {entry.id} requires this environment variable "
+                    "for vintage_as_of"
                 )
             if not entry.endpoint.api_url:
-                raise SourceRequestError(
-                    f"{entry.id} has no keyed FRED endpoint for vintage_as_of"
-                )
+                raise SourceRequestError(f"{entry.id} has no keyed FRED endpoint for vintage_as_of")
             return self._fetch_alfred(
                 entry,
                 api_key,
@@ -211,10 +220,15 @@ class FredExecutor:
         while True:
             params = {**request_params, "api_key": api_key, "offset": str(expected_offset)}
             response = self.requester.get(
-                str(entry.endpoint.api_url), params=params, policy=FRED_POLICY
+                str(entry.endpoint.api_url),
+                params=params,
+                policy=FRED_POLICY,
+                return_error_statuses=FRED_ERROR_STATUS,
             )
             if first_source_url is None:
                 first_source_url = redact_url(str(response.request.url))
+            if response.is_error:
+                self._raise_alfred_error(entry, api_key, vintage_as_of, response)
             try:
                 payload = response.json()
             except ValueError as exc:
@@ -287,9 +301,7 @@ class FredExecutor:
                     )
                 break
             if next_offset <= page_offset:
-                raise SourceRequestError(
-                    f"FRED/ALFRED pagination made no progress for {entry.id}"
-                )
+                raise SourceRequestError(f"FRED/ALFRED pagination made no progress for {entry.id}")
             expected_offset = next_offset
 
         if total_count is None or response_metadata is None or len(rows) != total_count:
@@ -319,6 +331,89 @@ class FredExecutor:
                 "retrieved_at_utc": retrieved_at,
                 "revision_date_status": "not checked; arbitrary closed past dates are valid",
             },
+        )
+
+    def _raise_alfred_error(
+        self,
+        entry: CatalogEntry,
+        api_key: str,
+        vintage_as_of: str,
+        response: Any,
+    ) -> None:
+        detail = _fred_error_message(response, api_key)
+        _raise_fred_credential_error(detail, entry.id)
+        if not _may_be_alfred_history_boundary(detail):
+            raise SourceRequestError(f"FRED/ALFRED rejected vintage_as_of for {entry.id}: {detail}")
+
+        series_id = str(entry.endpoint.series_id)
+        common_params = {
+            "series_id": series_id,
+            "api_key": api_key,
+            "file_type": "json",
+        }
+        dates_response = self.requester.get(
+            FRED_VINTAGE_DATES_URL,
+            params=common_params,
+            policy=FRED_POLICY,
+            return_error_statuses=FRED_ERROR_STATUS,
+        )
+        if not dates_response.is_error:
+            try:
+                dates_payload = dates_response.json()
+            except ValueError as exc:
+                raise SourceRequestError(
+                    f"FRED/ALFRED returned invalid vintage-date JSON for {entry.id}"
+                ) from exc
+            vintage_dates = dates_payload.get("vintage_dates")
+            if not isinstance(vintage_dates, list) or not vintage_dates:
+                raise SourceRequestError(
+                    f"FRED/ALFRED returned no usable vintage dates for {entry.id}"
+                )
+            try:
+                if not all(isinstance(item, str) for item in vintage_dates):
+                    raise TypeError("vintage date is not a string")
+                first_vintage = min(date.fromisoformat(item) for item in vintage_dates)
+            except (ValueError, TypeError) as exc:
+                raise SourceRequestError(
+                    f"FRED/ALFRED returned malformed vintage dates for {entry.id}"
+                ) from exc
+            if date.fromisoformat(vintage_as_of) < first_vintage:
+                raise VintagePrecedesHistoryError(
+                    f"{entry.id} vintage_as_of {vintage_as_of} precedes its first ALFRED "
+                    f"realtime vintage {first_vintage.isoformat()}"
+                )
+            raise SourceRequestError(f"FRED/ALFRED rejected vintage_as_of for {entry.id}: {detail}")
+
+        dates_detail = _fred_error_message(dates_response, api_key)
+        _raise_fred_credential_error(dates_detail, entry.id)
+        series_response = self.requester.get(
+            FRED_SERIES_INFO_URL,
+            params=common_params,
+            policy=FRED_POLICY,
+            return_error_statuses=FRED_ERROR_STATUS,
+        )
+        if not series_response.is_error:
+            try:
+                series_payload = series_response.json()
+            except ValueError as exc:
+                raise SourceRequestError(
+                    f"FRED returned invalid series metadata JSON for {entry.id}"
+                ) from exc
+            seriess = series_payload.get("seriess")
+            if not isinstance(seriess, list) or not seriess or not isinstance(seriess[0], dict):
+                raise SourceRequestError(f"FRED returned no usable series metadata for {entry.id}")
+            raise VintageHistoryAbsentError(
+                f"{entry.id} exists in FRED but has no ALFRED realtime history"
+            )
+
+        series_detail = _fred_error_message(series_response, api_key)
+        _raise_fred_credential_error(series_detail, entry.id)
+        if _fred_series_absent(series_detail):
+            raise SourceIdentifierNotFoundError(
+                _source_identifier_absent_message(entry.id, series_id, series_detail)
+            )
+        raise SourceRequestError(
+            f"FRED series existence check failed for {entry.id}: {series_detail}"
         )
 
     def _fetch_graph_csv(
@@ -367,6 +462,58 @@ class FredExecutor:
         )
 
 
+def _fred_error_message(response: Any, api_key: str) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        return f"HTTP {response.status_code} with no parseable error_message"
+    detail = payload.get("error_message") if isinstance(payload, dict) else None
+    if not isinstance(detail, str) or not detail.strip():
+        return f"HTTP {response.status_code} with no parseable error_message"
+    return detail.replace(api_key, "REDACTED")
+
+
+def _raise_fred_credential_error(detail: str, dataset_id: str) -> None:
+    normalized = " ".join(detail.casefold().split())
+    if "api_key is not set" in normalized:
+        raise MissingKeyError(
+            f"FRED_API_KEY is unset; {dataset_id} requires this environment variable "
+            "for vintage_as_of"
+        )
+    credential_rejected = "api_key" in normalized and any(
+        marker in normalized
+        for marker in ("not registered", "not a 32 character", "invalid", "incorrect")
+    )
+    if credential_rejected:
+        raise InvalidCredentialError(
+            f"FRED_API_KEY was rejected as not registered or invalid for {dataset_id}: {detail}"
+        )
+
+
+def _may_be_alfred_history_boundary(detail: str) -> bool:
+    normalized = " ".join(detail.casefold().split())
+    return (
+        "series does not exist in alfred but may exist in fred" in normalized
+        or _fred_series_absent(detail)
+    )
+
+
+def _fred_series_absent(detail: str) -> bool:
+    normalized = " ".join(detail.casefold().split())
+    return "the series does not exist." in normalized and "in alfred" not in normalized
+
+
+def _source_identifier_absent_message(dataset_id: str, series_id: str, detail: str) -> str:
+    message = f"{dataset_id} does not exist in FRED; check whether the source identifier is wrong."
+    if re.fullmatch(r"BOGZ1[A-Z]{2}\d{9}Q", series_id):
+        message += (
+            " For BOGZ1 Z.1 identifiers, the two-letter prefix encodes the economic concept; "
+            "FL, LM, FA, and FU are distinct concepts, not interchangeable spellings. Fiscus "
+            "did not guess or retry a different prefix."
+        )
+    return f"{message} Upstream: {detail}"
+
+
 def _validate_alfred_page_metadata(
     payload: dict[str, Any],
     dataset_id: str,
@@ -375,21 +522,19 @@ def _validate_alfred_page_metadata(
     start: str | None,
     end: str | None,
 ) -> tuple[int, int, int]:
-    if payload.get("realtime_start") != vintage_as_of or payload.get(
-        "realtime_end"
-    ) != vintage_as_of:
+    if (
+        payload.get("realtime_start") != vintage_as_of
+        or payload.get("realtime_end") != vintage_as_of
+    ):
         raise SourceRequestError(
-            f"FRED/ALFRED response real-time bounds differ from {vintage_as_of} "
-            f"for {dataset_id}"
+            f"FRED/ALFRED response real-time bounds differ from {vintage_as_of} for {dataset_id}"
         )
     if _response_integer(payload, "output_type", dataset_id) != 1:
         raise SourceRequestError(f"FRED/ALFRED response output_type is not 1 for {dataset_id}")
     if payload.get("units") != "lin":
         raise SourceRequestError(f"FRED/ALFRED response units are not lin for {dataset_id}")
     if payload.get("sort_order") != "asc":
-        raise SourceRequestError(
-            f"FRED/ALFRED response sort_order is not asc for {dataset_id}"
-        )
+        raise SourceRequestError(f"FRED/ALFRED response sort_order is not asc for {dataset_id}")
     for name, requested in (("observation_start", start), ("observation_end", end)):
         if requested and payload.get(name) != requested:
             raise SourceRequestError(
@@ -409,13 +554,10 @@ def _validate_alfred_page_metadata(
         )
     if limit != ALFRED_PAGE_LIMIT:
         raise SourceRequestError(
-            f"FRED/ALFRED returned limit {limit}; expected {ALFRED_PAGE_LIMIT} "
-            f"for {dataset_id}"
+            f"FRED/ALFRED returned limit {limit}; expected {ALFRED_PAGE_LIMIT} for {dataset_id}"
         )
     if offset > count:
-        raise SourceRequestError(
-            f"FRED/ALFRED returned offset beyond total count for {dataset_id}"
-        )
+        raise SourceRequestError(f"FRED/ALFRED returned offset beyond total count for {dataset_id}")
     return count, offset, limit
 
 
@@ -438,9 +580,7 @@ def _validate_alfred_observation(
     date_text = observation.get("date")
     value = observation.get("value")
     if not isinstance(date_text, str) or not isinstance(value, str):
-        raise SourceRequestError(
-            f"FRED/ALFRED row omitted a string date or value for {dataset_id}"
-        )
+        raise SourceRequestError(f"FRED/ALFRED row omitted a string date or value for {dataset_id}")
     try:
         observation_date = date.fromisoformat(date_text)
     except ValueError as exc:
@@ -449,13 +589,11 @@ def _validate_alfred_observation(
         ) from exc
     if start and observation_date < date.fromisoformat(start):
         raise SourceRequestError(
-            f"FRED/ALFRED returned {date_text} before requested observation start "
-            f"for {dataset_id}"
+            f"FRED/ALFRED returned {date_text} before requested observation start for {dataset_id}"
         )
     if end and observation_date > date.fromisoformat(end):
         raise SourceRequestError(
-            f"FRED/ALFRED returned {date_text} after requested observation end "
-            f"for {dataset_id}"
+            f"FRED/ALFRED returned {date_text} after requested observation end for {dataset_id}"
         )
     return (
         {
@@ -471,9 +609,7 @@ def _validate_alfred_observation(
 def _response_integer(payload: dict[str, Any], name: str, dataset_id: str) -> int:
     value = payload.get(name)
     if isinstance(value, bool):
-        raise SourceRequestError(
-            f"FRED/ALFRED response {name} is not an integer for {dataset_id}"
-        )
+        raise SourceRequestError(f"FRED/ALFRED response {name} is not an integer for {dataset_id}")
     try:
         parsed = int(value)
     except (TypeError, ValueError) as exc:
@@ -481,9 +617,7 @@ def _response_integer(payload: dict[str, Any], name: str, dataset_id: str) -> in
             f"FRED/ALFRED response {name} is not an integer for {dataset_id}"
         ) from exc
     if isinstance(value, float) and not value.is_integer():
-        raise SourceRequestError(
-            f"FRED/ALFRED response {name} is not an integer for {dataset_id}"
-        )
+        raise SourceRequestError(f"FRED/ALFRED response {name} is not an integer for {dataset_id}")
     if isinstance(value, str) and str(parsed) != value:
         raise SourceRequestError(
             f"FRED/ALFRED response {name} is not a canonical integer for {dataset_id}"

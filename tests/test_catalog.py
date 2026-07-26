@@ -12,7 +12,8 @@ from fiscus import __version__
 from fiscus.catalog import Catalog, catalog_schema_json
 from fiscus.caveats import CaveatContext, binding_caveats
 from fiscus.errors import CatalogError
-from fiscus.models import CatalogEntry
+from fiscus.models import CatalogEntry, ExecutorKind
+from fiscus.search import vintage_support
 from fiscus.service import FiscusService
 
 
@@ -35,9 +36,17 @@ def test_bundled_catalog_loads_and_search_ranks_semantics() -> None:
     assert result["results"][0]["units"]["scale"] == "millions"
 
 
+def test_non_fred_vintage_support_describes_only_the_entry_surface() -> None:
+    support = vintage_support(ExecutorKind.Z1, "z1")
+    assert support["supported"] is False
+    assert "catalog entry's z1 executor surface" in support["reason"]
+    assert "does not determine whether a separate FRED/ALFRED mirror exists" in support["reason"]
+    assert "check mirrors per series" in support["reason"]
+
+
 def test_package_version_is_unique_release_version() -> None:
-    assert __version__ == "0.3.0"
-    assert version("fiscus") == "0.3.0"
+    assert __version__ == "0.4.0"
+    assert version("fiscus") == "0.4.0"
 
 
 def test_cataloged_saar_flow_levels_always_explain_period_conversion() -> None:
@@ -64,13 +73,15 @@ def test_curated_direct_files_bind_release_identity_and_machine_access() -> None
 
     assert {entry.access.mode.value for entry in entries} == {"machine"}
     assert {entry.access.executor.value for entry in entries} == {"file"}
-    assert {
-        entry.response.vintage_strategy.value for entry in entries
-    } == {"logical_release_plus_sha256"}
+    assert {entry.response.vintage_strategy.value for entry in entries} == {
+        "logical_release_plus_sha256"
+    }
     assert all(entry.release is not None for entry in entries)
-    assert {
-        entry.release.representation for entry in entries if entry.release is not None
-    } == {"csv", "pdf", "html"}
+    assert {entry.release.representation for entry in entries if entry.release is not None} == {
+        "csv",
+        "pdf",
+        "html",
+    }
     assert {
         entry.release.logical_id
         for entry in entries
@@ -164,18 +175,23 @@ def test_executor_tool_and_browser_mode_contracts_match_runtime_and_schema() -> 
     catalog = Catalog.load()
     fred = catalog.get("fred.wdtgal").model_dump(mode="json")
     fred["tools"] = ["get_file"]
-    with pytest.raises(ValidationError, match=r"must declare exactly tools: \[get_series\]"):
+    with pytest.raises(ValidationError, match="exactly one compatible tool from: get_series"):
         CatalogEntry.model_validate(fred)
 
     duplicate = catalog.get("fred.wdtgal").model_dump(mode="json")
     duplicate["tools"] = ["get_series", "get_series"]
-    with pytest.raises(ValidationError, match=r"must declare exactly tools: \[get_series\]"):
+    with pytest.raises(ValidationError, match="exactly one compatible tool from: get_series"):
         CatalogEntry.model_validate(duplicate)
 
+    bea = catalog.get("bea.nipa_t10106")
+    assert [tool.value for tool in bea.tools] == ["bea_nipa_table"]
+    incompatible_bea = bea.model_dump(mode="json")
+    incompatible_bea["tools"] = ["get_file"]
+    with pytest.raises(ValidationError, match="bea_nipa_table, get_series"):
+        CatalogEntry.model_validate(incompatible_bea)
+
     browser = next(
-        entry
-        for entry in catalog.entries
-        if entry.access.executor.value == "browser_download"
+        entry for entry in catalog.entries if entry.access.executor.value == "browser_download"
     ).model_dump(mode="json")
     browser["access"]["mode"] = "machine"
     with pytest.raises(ValidationError, match="browser_download_only mode"):

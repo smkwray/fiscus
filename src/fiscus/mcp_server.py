@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
+from fiscus.errors import FiscusError
 from fiscus.service import FiscusService
 
 
@@ -27,6 +28,33 @@ def _issue_reporting_instruction() -> str:
 
 def create_server(service: FiscusService | None = None) -> Any:
     from mcp.server.fastmcp import FastMCP
+    from mcp.server.fastmcp.exceptions import ToolError
+    from mcp.types import CallToolResult, TextContent
+
+    class FiscusFastMCP(FastMCP):
+        async def call_tool(
+            self,
+            name: str,
+            arguments: dict[str, Any],
+        ) -> Any:
+            try:
+                return await super().call_tool(name, arguments)
+            except ToolError as exc:
+                cause: BaseException | None = exc
+                while cause is not None and not isinstance(cause, FiscusError):
+                    cause = cause.__cause__
+                if not isinstance(cause, FiscusError):
+                    raise
+                return CallToolResult(
+                    content=[
+                        TextContent(
+                            type="text",
+                            text=f"fiscus [{cause.code}]: {cause}",
+                        )
+                    ],
+                    structuredContent={"code": cause.code, "message": str(cause)},
+                    isError=True,
+                )
 
     core = service or FiscusService()
     owns_service = service is None
@@ -38,7 +66,7 @@ def create_server(service: FiscusService | None = None) -> Any:
         finally:
             core.close()
 
-    app = FastMCP(
+    app = FiscusFastMCP(
         "fiscus",
         instructions=(
             "Curated US economic data (Treasury plumbing, Fed, FRED, BEA, BLS, and more) "
@@ -71,11 +99,12 @@ def create_server(service: FiscusService | None = None) -> Any:
     def find_series(query: str, family: str | None = None, limit: int = 8) -> dict[str, Any]:
         """Search the curated catalog. Call this before guessing any series or dataset id.
 
-        Results are ranked lexical matches and include units, history start, access needs,
-        supported fetch tool, and caveat count so the next call can select the right concept.
-        When the catalog has no match, uncurated candidates from the source's own search are
-        returned under uncurated_upstream — fetchable, but without curated caveat review.
-        For keyless discovery across the Z.1 package data dictionary, pass family="z1".
+        Curated results include units, history start, access needs, supported fetch tool,
+        and caveat count so the next call can select the right concept. When the catalog has
+        no match, uncurated candidates from the source's own search are returned under
+        uncurated_upstream. BEA inventory candidates intentionally omit reviewed history,
+        units, and verified_on. For keyless discovery across the Z.1 package data dictionary,
+        pass family="z1".
         """
         return core.find_series(query, family=family, limit=limit)
 
@@ -96,13 +125,41 @@ def create_server(service: FiscusService | None = None) -> Any:
         binding caveats, provenance, and an artifact descriptor. Read full bytes through
         fiscus-cache://artifact/<cache_key>. Set refresh only for a new source retrieval.
         For a FRED/ALFRED snapshot, set vintage_as_of to a closed past ISO date; start and
-        end remain observation-date bounds, and FRED_API_KEY is required.
+        end remain observation-date bounds, and FRED_API_KEY is required. Vintage failures
+        distinguish an unset key, a rejected credential, no ALFRED history, a request before
+        the first ALFRED vintage, and a source identifier that does not exist. A failed BOGZ1
+        identifier is not auto-corrected because its two-letter prefix encodes the concept.
         """
         return core.get_series(
             dataset_id,
             start=start,
             end=end,
             vintage_as_of=vintage_as_of,
+            refresh=refresh,
+        )
+
+    @app.tool()
+    def bea_nipa_table(
+        table_id: str,
+        frequency: Literal["A", "Q", "M"],
+        start_year: int,
+        end_year: int,
+        refresh: bool = False,
+    ) -> dict[str, Any]:
+        """Fetch a complete BEA NIPA table for an explicit inclusive year range.
+
+        table_id is BEA's canonical TableName (for example T10106). frequency must be
+        A, Q, or M and must be advertised for that table in BEA's source inventory.
+        The route is NIPA-only, sends an explicit Year list rather than Year=X, and
+        returns source-observed metric labels plus per-line coverage. Uncurated tables
+        omit reviewed units, history, and verified_on claims; exact curated pairs add
+        a separate catalog overlay. BEA_API_KEY is required for a source retrieval.
+        """
+        return core.bea_nipa_table(
+            table_id,
+            frequency,
+            start_year,
+            end_year,
             refresh=refresh,
         )
 

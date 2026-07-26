@@ -2,7 +2,7 @@
 
 **US economic data MCP server — curated catalog of macro, Treasury, and financial sources with the caveats attached**
 
-fiscus leads with the plumbing that generic macro-data wrappers usually omit: Treasury FiscalData, MSPD, DTS, SOMA, Z.1 semantics, TIC, and OFR money-fund monitors — alongside BEA national accounts, BLS labor series, CBO baselines, NY Fed reference rates, TreasuryDirect auctions, and selected FRED series. Every fetch is catalog-selected, cached, labeled with units and known footguns, and stored with immutable provenance. Sources that reject automated clients (bls.gov tables, cbo.gov workbooks) are cataloged as browser-download-only so agents get an explicit diagnosis instead of a mysterious 403.
+fiscus leads with the plumbing that generic macro-data wrappers usually omit: Treasury FiscalData, MSPD, DTS, SOMA, Z.1 semantics, TIC, and OFR money-fund monitors — alongside BEA national accounts, BLS labor series, CBO baselines, NY Fed reference rates, TreasuryDirect auctions, and selected FRED series. Curated fetches are catalog-selected and labeled with reviewed units and known footguns; explicitly uncurated routes remain labeled as such. Fetches are cached with immutable provenance. Sources that reject automated clients (bls.gov tables, cbo.gov workbooks) are cataloged as browser-download-only so agents get an explicit diagnosis instead of a mysterious 403.
 
 ## Install
 
@@ -60,13 +60,14 @@ Generic client configuration:
 From a checkout, use `uv run fiscus-mcp` instead.
 
 Cache-backed tool results contain an artifact descriptor, not a server-local pathname. MCP clients read the exact payload through the read-only resource template
-`fiscus-cache://artifact/{cache_key}`. The resource returns byte-exact content, including binary workbooks and archives; use the descriptor's `mime_type` and `filename` when saving or interpreting it. This keeps the eight read-only tools focused on economic-data operations rather than adding a server-side export tool whose path would still be inaccessible to a remote MCP client.
+`fiscus-cache://artifact/{cache_key}`. The resource returns byte-exact content, including binary workbooks and archives; use the descriptor's `mime_type` and `filename` when saving or interpreting it. This keeps the nine read-only tools focused on economic-data operations rather than adding a server-side export tool whose path would still be inaccessible to a remote MCP client.
 
 ## Command surface
 
 ```text
 fiscus find-series QUERY
 fiscus get-series DATASET_ID [--start DATE] [--end DATE] [--vintage-as-of DATE]
+fiscus bea-nipa-table TABLE_ID {A,Q,M} START_YEAR END_YEAR
 fiscus fiscaldata-query DATASET_ID [--param KEY=VALUE] [--max-pages N]
 fiscus get-file DATASET_ID
 fiscus z1-series CODE KIND [--start DATE] [--end DATE]
@@ -88,6 +89,7 @@ Call `find-series` before a fetch command. Dataset identifiers are curated catal
   SHA-256 of exact downloaded bytes, so a correction at the same URL creates a new
   revision while ETag and Last-Modified remain transport metadata.
 - **Z.1 package discovery:** `find-series QUERY --family z1` searches the current official package data dictionary without a key and returns the exact `z1-series CODE KIND` call for uncataloged matches.
+- **BEA NIPA table access:** `find-series QUERY --family bea` falls back to BEA's source-reported NIPA table inventory. The inventory is cached in Fiscus's platform SQLite cache and refreshed once before an apparent table/frequency miss is rejected. `bea-nipa-table` fixes `datasetname=NIPA`, requires explicit inclusive years, and returns per-line observed coverage. Uncurated results and responses omit reviewed history, units, and `verified_on`; an exact cataloged table/frequency pair adds a separate curation overlay. `get-series bea.nipa_t10106` remains a deprecated one-release alias.
 - **Local artifacts:** private overlay entries can register files already on disk via the `local_file` executor (`endpoint.local_path`) — served in place with a content-hash provenance block, never copied. See `catalog/CONTRIBUTING.md`.
 
 `z1-series` additionally accepts any mnemonic from the official Z.1 CSV package (including FRED-style `BOGZ1` aliases) and enforces the mnemonic's official series-type prefix, including transactions, levels, changes, revaluations, other volume changes, seasonal factors, growth rates, and indexes. One package download per release serves every series, and uncataloged mnemonics are labeled from the package's own data dictionary. `soma-holdings` resolves the latest weekly snapshot date before consulting the cache, so "latest" never freezes to a stale snapshot. `provenance` re-emits the immutable manifest and artifact descriptor for a full cache key or unique prefix.

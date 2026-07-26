@@ -3,9 +3,10 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -18,7 +19,11 @@ from fiscus.errors import (
     BrowserDownloadOnlyError,
     DatasetNotFoundError,
     FiscusError,
+    InvalidRequestError,
     InvalidVintageError,
+    MissingKeyError,
+    SourceQueryRejectedError,
+    SourceSchemaChangedError,
     UnsupportedToolError,
     UnsupportedVintageError,
 )
@@ -33,6 +38,7 @@ from fiscus.executors import (
     Z1Executor,
 )
 from fiscus.executors.base import FetchResult
+from fiscus.executors.json_api import JsonApiRequestSpec
 from fiscus.executors.z1 import Z1_PACKAGE_URL, Z1Loaded
 from fiscus.http import HttpRequester
 from fiscus.models import (
@@ -55,7 +61,12 @@ from fiscus.models import (
     UnitSpec,
     VintageStrategy,
 )
-from fiscus.return_format import build_fetch_response, date_coverage, preview_rows
+from fiscus.return_format import (
+    build_fetch_response,
+    date_coverage,
+    preview_rows,
+    preview_rows_for_fields,
+)
 from fiscus.search import find_series as search_catalog
 from fiscus.search import vintage_support
 from fiscus.unit_inference import infer_passthrough_units
@@ -63,6 +74,19 @@ from fiscus.unit_inference import infer_passthrough_units
 FILTER_DATE = re.compile(
     r"(?P<field>[A-Za-z0-9_]+):(?P<op>gte|gt|lte|lt|eq):(?P<date>\d{4}-\d{2}-\d{2})"
 )
+BEA_API_URL = "https://apps.bea.gov/api/data/"
+BEA_NIPA_INVENTORY_DATASET_ID = "bea_nipa_inventory"
+BEA_NIPA_TABLE_DATASET_ID = "bea_nipa_table"
+BEA_TABLE_ID = re.compile(r"^T[A-Z0-9]{5,6}$")
+BEA_FREQUENCIES = frozenset({"A", "Q", "M"})
+BEA_INVENTORY_FREQUENCY = re.compile(r"\(([AQM])\)")
+
+
+@dataclass(frozen=True)
+class BeaNipaInventory:
+    rows: list[dict[str, Any]]
+    diagnostics: dict[str, Any] | None = None
+
 
 Z1_KIND_MEANINGS = {
     "FA": "a seasonally adjusted annual-rate transaction flow",
@@ -81,6 +105,42 @@ Z1_KIND_MEANINGS = {
 
 if set(Z1_KIND_MEANINGS) != set(Z1_KIND_CODES):  # pragma: no cover - import-time invariant
     raise RuntimeError("Z.1 kind meanings must cover the official series-prefix taxonomy")
+
+BEA_NIPA_INVENTORY_REQUEST = JsonApiRequestSpec(
+    request_id=BEA_NIPA_INVENTORY_DATASET_ID,
+    url=BEA_API_URL,
+    default_params={
+        "method": "GetParameterValues",
+        "datasetname": "NIPA",
+        "ParameterName": "TableName",
+        "ResultFormat": "json",
+    },
+    auth_mode=AuthMode.REQUIRED,
+    auth_env_var="BEA_API_KEY",
+    api_key_param="UserID",
+    data_path="BEAAPI.Results.ParamValue",
+    response_adapter="bea_api",
+)
+
+BEA_NIPA_TABLE_REQUEST = JsonApiRequestSpec(
+    request_id=BEA_NIPA_TABLE_DATASET_ID,
+    url=BEA_API_URL,
+    default_params={
+        "method": "GetData",
+        "datasetname": "NIPA",
+        "ResultFormat": "json",
+        "ShowMillions": "N",
+    },
+    allowed_params=frozenset({"TableName", "Frequency", "Year"}),
+    auth_mode=AuthMode.REQUIRED,
+    auth_env_var="BEA_API_KEY",
+    api_key_param="UserID",
+    data_path="BEAAPI.Results.Data",
+    date_fields=("date", "TimePeriod"),
+    value_fields=("DataValue",),
+    date_normalizer="bea_period",
+    response_adapter="bea_api",
+)
 
 
 def default_user_agent() -> str:
@@ -181,13 +241,15 @@ class FiscusService:
             "all query tokens matched" in result.get("matched_on", []) for result in results
         )
         if not complete_match:
-            upstream, note = self._upstream_search(query, limit, family=family)
+            upstream, note, diagnostics = self._upstream_search(query, limit, family=family)
             if results:
                 note = (
                     "Catalog matches above are partial (no entry matched every query term). " + note
                 )
             response["uncurated_upstream"] = upstream
             response["note"] = note
+            if diagnostics is not None:
+                response["uncurated_upstream_diagnostics"] = diagnostics
         return response
 
     def get_series(
@@ -199,6 +261,39 @@ class FiscusService:
         vintage_as_of: str | date | None = None,
         refresh: bool = False,
     ) -> dict[str, Any]:
+        if dataset_id == "bea.nipa_t10106":
+            if vintage_as_of is not None:
+                raise UnsupportedVintageError(
+                    "bea.nipa_t10106 cannot serve vintage_as_of; use bea_nipa_table"
+                )
+            start_date = parse_date(start)
+            end_date = parse_date(end)
+            if start_date and end_date and end_date < start_date:
+                raise InvalidRequestError("end must not precede start")
+            result = self.bea_nipa_table(
+                "T10106",
+                "Q",
+                start_date.year if start_date else 1947,
+                end_date.year if end_date else datetime.now(UTC).year,
+                refresh=refresh,
+            )
+            artifact = self.cache.find_by_cache_key(result["artifact"]["cache_key"])
+            filtered = self._build_bea_nipa_response(
+                "T10106",
+                "Q",
+                artifact,
+                observation_start=start_date,
+                observation_end=end_date,
+            )
+            filtered["cache_hit"] = result["cache_hit"]
+            result = filtered
+            result["deprecation"] = {
+                "status": "deprecated",
+                "remove_after": "one release",
+                "replacement": "bea_nipa_table(T10106, Q, start_year, end_year)",
+            }
+            return result
+
         vintage_date = _closed_past_vintage(vintage_as_of)
         try:
             entry = self.catalog.get(dataset_id)
@@ -275,6 +370,303 @@ class FiscusService:
             caveat_context=context,
             fetch=fetch,
         )
+
+    def bea_nipa_table(
+        self,
+        table_id: str,
+        frequency: Literal["A", "Q", "M"],
+        start_year: int,
+        end_year: int,
+        *,
+        refresh: bool = False,
+    ) -> dict[str, Any]:
+        table = str(table_id).strip().upper()
+        freq = str(frequency).strip().upper()
+        first_year, last_year = _validate_bea_nipa_request(
+            table,
+            freq,
+            start_year,
+            end_year,
+        )
+        request_params = canonical_params(
+            {
+                "table_id": table,
+                "frequency": freq,
+                "start_year": first_year,
+                "end_year": last_year,
+            }
+        )
+        cached = None if refresh else self.cache.load_latest(
+            BEA_NIPA_TABLE_DATASET_ID,
+            request_params,
+        )
+        if cached is None:
+            if not os.environ.get("BEA_API_KEY"):
+                raise MissingKeyError(
+                    "BEA_API_KEY is unset; bea_nipa_table requires this environment variable"
+                )
+            inventory_item = self._validate_bea_nipa_inventory_pair(table, freq)
+            year_param = ",".join(str(year) for year in range(first_year, last_year + 1))
+            result = self.json_api.fetch_request(
+                BEA_NIPA_TABLE_REQUEST,
+                params={
+                    "TableName": table,
+                    "Frequency": freq,
+                    "Year": year_param,
+                },
+            )
+            coverage = bea_nipa_coverage(result.rows, table)
+            source_reported = {
+                "description": inventory_item["Description"],
+                "advertised_frequencies": inventory_item["advertised_frequencies"],
+            }
+            if inventory_item.get("inventory_diagnostics") is not None:
+                source_reported["inventory_diagnostics"] = inventory_item[
+                    "inventory_diagnostics"
+                ]
+            data = rows_to_csv_bytes(
+                result.rows,
+                preferred_fields=[
+                    "date",
+                    "TimePeriod",
+                    "TableName",
+                    "LineNumber",
+                    "SeriesCode",
+                    "LineDescription",
+                    "METRIC_NAME",
+                    "CL_UNIT",
+                    "UNIT_MULT",
+                    "DataValue",
+                ],
+            )
+            manifest = {
+                "source_url": result.source_url,
+                "retrieved_at_utc": result.retrieved_at_utc,
+                "source_metadata": result.source_metadata,
+                "source_request": {
+                    "operation": BEA_NIPA_TABLE_DATASET_ID,
+                    "method": "GetData",
+                    "datasetname": "NIPA",
+                    "TableName": table,
+                    "Frequency": freq,
+                    "Year": year_param,
+                    "ResultFormat": "json",
+                    "ShowMillions": "N",
+                },
+                "source_reported": source_reported,
+                "row_count": len(result.rows),
+                "data_coverage": date_coverage(result.rows, ("date", "TimePeriod")),
+                "observed_coverage": coverage,
+            }
+            cached = self.cache.store(
+                BEA_NIPA_TABLE_DATASET_ID,
+                request_params,
+                result.vintage,
+                data,
+                manifest,
+            )
+        return self._build_bea_nipa_response(table, freq, cached)
+
+    def _validate_bea_nipa_inventory_pair(
+        self,
+        table_id: str,
+        frequency: str,
+    ) -> dict[str, Any]:
+        match: dict[str, Any] | None = None
+        for refresh in (False, True):
+            try:
+                inventory = self._bea_nipa_inventory(refresh=refresh)
+            except SourceSchemaChangedError:
+                if refresh:
+                    raise
+                continue
+            match = next(
+                (row for row in inventory.rows if row["TableName"] == table_id),
+                None,
+            )
+            if match is not None and frequency in match["advertised_frequencies"]:
+                if inventory.diagnostics is not None:
+                    return {**match, "inventory_diagnostics": inventory.diagnostics}
+                return match
+        if match is None:
+            raise SourceQueryRejectedError(
+                f"BEA NIPA inventory does not advertise table {table_id} after refresh"
+            )
+        advertised = ", ".join(match["advertised_frequencies"]) or "none"
+        raise SourceQueryRejectedError(
+            f"BEA NIPA table {table_id} does not advertise frequency {frequency}; "
+            f"advertised frequencies: {advertised}"
+        )
+
+    def _bea_nipa_inventory(self, *, refresh: bool = False) -> BeaNipaInventory:
+        request_params = canonical_params(
+            {"source_dataset": "NIPA", "parameter_name": "TableName"}
+        )
+        cached = None if refresh else self.cache.load_latest(
+            BEA_NIPA_INVENTORY_DATASET_ID,
+            request_params,
+        )
+        if cached is None:
+            result = self.json_api.fetch_request(BEA_NIPA_INVENTORY_REQUEST)
+            data = rows_to_csv_bytes(
+                result.rows,
+                preferred_fields=["TableName", "Description"],
+            )
+            cached = self.cache.store(
+                BEA_NIPA_INVENTORY_DATASET_ID,
+                request_params,
+                result.vintage,
+                data,
+                {
+                    "source_url": result.source_url,
+                    "retrieved_at_utc": result.retrieved_at_utc,
+                    "source_metadata": result.source_metadata,
+                    "source_request": {
+                        "operation": BEA_NIPA_INVENTORY_DATASET_ID,
+                        "method": "GetParameterValues",
+                        "datasetname": "NIPA",
+                        "ParameterName": "TableName",
+                        "ResultFormat": "json",
+                    },
+                    "row_count": len(result.rows),
+                },
+            )
+        return normalize_bea_nipa_inventory(cached.rows)
+
+    def _bea_curated_entry(self, table_id: str, frequency: str) -> CatalogEntry | None:
+        for entry in self.catalog.entries:
+            defaults = entry.endpoint.default_params
+            if (
+                entry.family == "bea"
+                and entry.access.executor == ExecutorKind.JSON_API
+                and entry.tools == [ToolName.BEA_NIPA_TABLE]
+                and defaults.get("datasetname", "").upper() == "NIPA"
+                and defaults.get("TableName", "").upper() == table_id
+                and defaults.get("Frequency", "").upper() == frequency
+            ):
+                return entry
+        return None
+
+    def _build_bea_nipa_response(
+        self,
+        table_id: str,
+        frequency: str,
+        artifact: Any,
+        *,
+        observation_start: date | None = None,
+        observation_end: date | None = None,
+    ) -> dict[str, Any]:
+        artifact_rows = artifact.rows
+        manifest = artifact.manifest
+        artifact_coverage = bea_nipa_coverage(artifact_rows, table_id)
+        stored_coverage = manifest.get("observed_coverage")
+        if isinstance(stored_coverage, dict) and stored_coverage != artifact_coverage:
+            raise SourceSchemaChangedError(
+                "cached BEA NIPA observed coverage disagrees with the artifact rows"
+            )
+        rows = _filter_rows_by_date(
+            artifact_rows,
+            start=observation_start,
+            end=observation_end,
+        )
+        coverage = bea_nipa_coverage(rows, table_id)
+        curated = self._bea_curated_entry(table_id, frequency)
+        source_reported = manifest.get("source_reported", {})
+        if not isinstance(source_reported, dict):
+            source_reported = {}
+        head, tail, truncated = preview_rows_for_fields(
+            rows,
+            [
+                "date",
+                "TimePeriod",
+                "TableName",
+                "LineNumber",
+                "SeriesCode",
+                "LineDescription",
+                "METRIC_NAME",
+                "CL_UNIT",
+                "UNIT_MULT",
+                "DataValue",
+            ],
+        )
+        metric_names = _observed_values(rows, "METRIC_NAME")
+        response_date_coverage = date_coverage(rows, ("date", "TimePeriod"))
+        caveats = [_serialize_route_caveat(_BEA_NIPA_OBSERVED_ROWS_CAVEAT)]
+        if any(
+            "fisher quantity index" in metric.casefold()
+            or "chained dollars" in metric.casefold()
+            for metric in metric_names
+        ):
+            caveats.append(_serialize_route_caveat(_BEA_NIPA_CONCEPT_CAVEAT))
+        if curated is not None:
+            context = CaveatContext(
+                start=observation_start
+                or date(int(manifest["params"]["start_year"]), 1, 1),
+                end=observation_end
+                or date(int(manifest["params"]["end_year"]), 12, 31),
+                params={"TableName": table_id, "Frequency": frequency},
+            )
+            for caveat in binding_caveats(curated, context):
+                if caveat["id"] not in {item["id"] for item in caveats}:
+                    caveats.append(caveat)
+
+        curation = {
+            "status": "curated" if curated is not None else "uncurated",
+            "catalog_id": curated.id if curated is not None else None,
+            "verified_on": curated.verified_on.isoformat() if curated is not None else None,
+        }
+        response: dict[str, Any] = {
+            "dataset": {
+                "route_id": f"bea.nipa:{table_id}:{frequency}",
+                "source_dataset": "NIPA",
+                "table_id": table_id,
+                "frequency": frequency,
+                "source_reported": source_reported,
+                "curation": curation,
+            },
+            "observed": {
+                "metric_names": metric_names,
+                "unit_labels": _observed_values(rows, "CL_UNIT"),
+                "unit_multipliers": _observed_values(rows, "UNIT_MULT"),
+                "coverage": coverage,
+                "empty_response": not rows,
+            },
+            "preview": {
+                "row_count": len(rows),
+                "columns": list(rows[0]) if rows else [],
+                "date_coverage": response_date_coverage,
+                "head": head,
+                "tail": tail,
+                **({"truncated_columns": truncated} if truncated else {}),
+            },
+            "caveats": caveats,
+            "provenance": {
+                "source_url": manifest["source_url"],
+                "retrieved_at_utc": manifest["retrieved_at_utc"],
+                "sha256": manifest["sha256"],
+                "byte_count": manifest["byte_count"],
+                "vintage": manifest["vintage"],
+                "cache_key": manifest["cache_key"],
+                "row_count": len(rows),
+                "data_coverage": response_date_coverage,
+                "source_request": manifest.get("source_request", {}),
+                "source_metadata": manifest.get("source_metadata", {}),
+            },
+            "artifact": artifact.descriptor.as_dict(),
+            "cache_hit": artifact.cache_hit,
+        }
+        if curated is not None:
+            response["catalog"] = {
+                "id": curated.id,
+                "title": curated.title,
+                "publisher": curated.publisher,
+                "frequency": curated.frequency,
+                "units": curated.units.model_dump(mode="json"),
+                "history": curated.history.model_dump(mode="json"),
+                "semantics": curated.semantics.model_dump(mode="json"),
+                "verified_on": curated.verified_on.isoformat(),
+            }
+        return response
 
     def fiscaldata_query(
         self,
@@ -557,13 +949,49 @@ class FiscusService:
         limit: int,
         *,
         family: str | None,
-    ) -> tuple[list[dict[str, Any]], str]:
+    ) -> tuple[list[dict[str, Any]], str, dict[str, Any] | None]:
         """Source-side search when the curated catalog has no match."""
+        if family == "bea" or _looks_like_bea_nipa_query(query):
+            try:
+                inventory = self._bea_nipa_inventory()
+            except SourceSchemaChangedError:
+                try:
+                    inventory = self._bea_nipa_inventory(refresh=True)
+                except MissingKeyError:
+                    return [], (
+                        "The cached BEA NIPA inventory is unusable and BEA_API_KEY is unset, "
+                        "so Fiscus cannot refresh source-reported table discovery."
+                    ), None
+                except FiscusError as exc:
+                    return [], f"BEA NIPA inventory search failed after refresh: {exc}", None
+            except MissingKeyError:
+                return [], (
+                    "No complete curated BEA match and no cached NIPA inventory is available. "
+                    "Set BEA_API_KEY once to cache BEA's source-reported table inventory."
+                ), None
+            except FiscusError as exc:
+                return [], f"BEA NIPA inventory search failed: {exc}", None
+            upstream = search_bea_nipa_inventory(inventory.rows, query, limit)
+            note = (
+                "No complete curated catalog match; results below are from BEA's "
+                "source-reported NIPA TableName inventory, cached in the platform Fiscus "
+                "SQLite cache. They omit reviewed units, history, and verified_on claims. "
+                "Fetch with bea_nipa_table using one advertised frequency."
+                if upstream
+                else "No complete curated match and BEA's NIPA table inventory returned nothing."
+            )
+            if inventory.diagnostics is not None:
+                note += (
+                    " Inventory normalization skipped "
+                    f"{inventory.diagnostics['skipped_row_count']} malformed source row(s); "
+                    "the valid rows remain searchable."
+                )
+            return upstream, note, inventory.diagnostics
         if family == "z1":
             try:
                 upstream = self.z1.search_series(query, limit)
             except FiscusError as exc:
-                return [], f"Z.1 package data-dictionary search failed: {exc}"
+                return [], f"Z.1 package data-dictionary search failed: {exc}", None
             note = (
                 "No complete curated catalog match; results below are from the current "
                 "official Z.1 package data dictionary and carry no curated caveat review. "
@@ -574,16 +1002,20 @@ class FiscusService:
                     "returned nothing."
                 )
             )
-            return upstream, note
+            return upstream, note, None
         if family not in {None, "fred"}:
-            return [], f"No curated catalog match or source-side search for family {family!r}."
+            return (
+                [],
+                f"No curated catalog match or source-side search for family {family!r}.",
+                None,
+            )
         api_key = os.environ.get("FRED_API_KEY")
         if not api_key:
             return [], (
                 "No curated catalog match. Uncataloged FRED or BLS series can still be "
                 "fetched as fred.<SERIES_ID> or bls.<SERIES_ID> (no curated caveat review). "
                 "Set FRED_API_KEY to enable upstream FRED search from this tool."
-            )
+            ), None
         found = self.fred.search(query, api_key, limit)
         upstream = [
             {
@@ -609,7 +1041,7 @@ class FiscusService:
             else "No curated catalog match and FRED's upstream search returned nothing; "
             "uncataloged series can still be fetched as fred.<SERIES_ID> or bls.<SERIES_ID>."
         )
-        return upstream, note
+        return upstream, note, None
 
     def _passthrough_entry(self, dataset_id: str) -> CatalogEntry:
         """Synthesize an entry for an uncataloged fred.<ID> or bls.<ID> request."""
@@ -840,6 +1272,297 @@ _BLS_WINDOW_CAVEAT = Caveat(
         "the requested window."
     ),
 )
+
+_BEA_NIPA_OBSERVED_ROWS_CAVEAT = Caveat(
+    id="bea.nipa_observed_rows",
+    severity=Severity.CRITICAL,
+    message=(
+        "BEA returns only the observations present for each table line. Earlier periods may be "
+        "absent with no blank placeholder, and different lines in one table may begin in "
+        "different periods. Do not infer a line's history from the table-wide date range; "
+        "inspect `coverage.by_line` for the selected `LineNumber`/`SeriesCode`."
+    ),
+)
+
+_BEA_NIPA_CONCEPT_CAVEAT = Caveat(
+    id="bea.nipa_quantity_chained_concepts",
+    severity=Severity.CRITICAL,
+    message=(
+        "Quantity indexes and chained-dollar values produce the same percent-change measures, "
+        "apart from rounding, but they are not interchangeable level concepts. Chained-dollar "
+        "components are generally nonadditive away from the reference year; do not substitute "
+        "one metric for the other when a dollar level, share, aggregation, or contribution is "
+        "required."
+    ),
+)
+
+
+def _serialize_route_caveat(caveat: Caveat) -> dict[str, Any]:
+    return {
+        "id": caveat.id,
+        "severity": caveat.severity.value,
+        "message": caveat.message,
+        "binds": True,
+        "when": caveat.when.model_dump(mode="json"),
+        "source_note": caveat.source_note,
+    }
+
+
+def _validate_bea_nipa_request(
+    table_id: str,
+    frequency: str,
+    start_year: int,
+    end_year: int,
+) -> tuple[int, int]:
+    if not BEA_TABLE_ID.fullmatch(table_id):
+        raise InvalidRequestError("table_id must be a canonical BEA NIPA TableName such as T10106")
+    if frequency not in BEA_FREQUENCIES:
+        raise InvalidRequestError("frequency must be one of A, Q, or M")
+    first_year = _coerce_bea_year(start_year)
+    last_year = _coerce_bea_year(end_year)
+    if first_year > last_year:
+        raise InvalidRequestError("start_year must not exceed end_year")
+    if last_year - first_year > 500:
+        raise InvalidRequestError("year range must not exceed 501 inclusive years")
+    return first_year, last_year
+
+
+def _coerce_bea_year(value: Any) -> int:
+    message = "start_year and end_year must be four-digit integers"
+    if isinstance(value, bool):
+        raise InvalidRequestError(message)
+    try:
+        year = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise InvalidRequestError(message) from exc
+    if value != year and str(value).strip() != str(year):
+        raise InvalidRequestError(message)
+    if not 1000 <= year <= 9999:
+        raise InvalidRequestError(message)
+    return year
+
+
+def normalize_bea_nipa_inventory(rows: list[dict[str, str]]) -> BeaNipaInventory:
+    normalized: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, row in enumerate(rows):
+        table_id = (row.get("TableName") or row.get("Key") or "").strip().upper()
+        description = (row.get("Description") or row.get("Desc") or "").strip()
+        problems: list[str] = []
+        if not BEA_TABLE_ID.fullmatch(table_id):
+            problems.append("TableName/Key is absent or noncanonical")
+        if not description:
+            problems.append("Description/Desc is absent")
+        if table_id and table_id in seen:
+            problems.append(f"TableName {table_id} is duplicated")
+        frequencies = sorted(set(BEA_INVENTORY_FREQUENCY.findall(description)))
+        if description and not frequencies:
+            problems.append("Description/Desc advertises no A/Q/M frequency")
+        if problems:
+            issues.append(
+                {
+                    "row_index": index,
+                    "fields": {
+                        "TableName": row.get("TableName"),
+                        "Key": row.get("Key"),
+                        "Description": row.get("Description"),
+                        "Desc": row.get("Desc"),
+                    },
+                    "problems": problems,
+                }
+            )
+            continue
+        seen.add(table_id)
+        normalized.append(
+            {
+                "TableName": table_id,
+                "Description": description,
+                "advertised_frequencies": frequencies,
+            }
+        )
+    if not normalized:
+        sample = issues[:3]
+        raise SourceSchemaChangedError(
+            "BEA NIPA inventory has no usable table rows; "
+            f"received_rows={len(rows)}, skipped_rows={len(issues)}, "
+            f"field_context={sample!r}"
+        )
+    diagnostics = None
+    if issues:
+        diagnostics = {
+            "skipped_row_count": len(issues),
+            "received_row_count": len(rows),
+            "sample_issues": issues[:3],
+            "sample_truncated": len(issues) > 3,
+        }
+    return BeaNipaInventory(rows=normalized, diagnostics=diagnostics)
+
+
+def bea_nipa_coverage(
+    rows: list[dict[str, str]],
+    requested_table_id: str,
+) -> dict[str, Any]:
+    by_line: dict[tuple[str, str], dict[str, Any]] = {}
+    seen_observations: set[tuple[str, str, str]] = set()
+    for row in rows:
+        table_id = row.get("TableName", "").strip().upper()
+        line_number = row.get("LineNumber", "").strip()
+        period = row.get("TimePeriod", "").strip()
+        if table_id != requested_table_id or not line_number or not period:
+            raise SourceSchemaChangedError(
+                "BEA NIPA data row lacks the requested TableName, LineNumber, or TimePeriod"
+            )
+        observation_key = (table_id, line_number, period)
+        if observation_key in seen_observations:
+            raise SourceSchemaChangedError(
+                f"BEA NIPA response repeats line {line_number} period {period}"
+            )
+        seen_observations.add(observation_key)
+        line_key = (table_id, line_number)
+        item = by_line.setdefault(
+            line_key,
+            {
+                "periods": [],
+                "series_codes": set(),
+                "line_descriptions": set(),
+                "cl_units": set(),
+                "unit_mults": set(),
+                "metric_names": set(),
+            },
+        )
+        item["periods"].append(period)
+        for field, key in (
+            ("SeriesCode", "series_codes"),
+            ("LineDescription", "line_descriptions"),
+            ("CL_UNIT", "cl_units"),
+            ("UNIT_MULT", "unit_mults"),
+            ("METRIC_NAME", "metric_names"),
+        ):
+            value = row.get(field, "").strip()
+            if value:
+                item[key].add(value)
+
+    lines: list[dict[str, Any]] = []
+    for (_, line_number), item in sorted(by_line.items(), key=lambda pair: _line_sort(pair[0][1])):
+        series_codes = sorted(item["series_codes"])
+        if len(series_codes) > 1:
+            raise SourceSchemaChangedError(
+                f"BEA NIPA line {line_number} carries conflicting SeriesCode values: "
+                + ", ".join(series_codes)
+            )
+        descriptions = sorted(item["line_descriptions"])
+        periods = item["periods"]
+        line = {
+            "line_number": line_number,
+            "series_code": series_codes[0] if series_codes else None,
+            "line_description": descriptions[0] if len(descriptions) == 1 else None,
+            "first_observed_period": min(periods),
+            "last_observed_period": max(periods),
+            "observation_count": len(periods),
+            "observed_cl_unit": sorted(item["cl_units"]),
+            "observed_unit_mult": sorted(item["unit_mults"]),
+            "observed_metric_name": sorted(item["metric_names"]),
+        }
+        if len(descriptions) > 1:
+            line["observed_line_descriptions"] = descriptions
+        lines.append(line)
+
+    periods = [row.get("TimePeriod", "") for row in rows if row.get("TimePeriod")]
+    return {
+        "basis": "observed_rows_in_this_artifact",
+        "continuity_assessed": False,
+        "table": {
+            "first_observed_period_any_line": min(periods) if periods else None,
+            "last_observed_period_any_line": max(periods) if periods else None,
+            "row_count": len(rows),
+            "line_count": len(lines),
+        },
+        "by_line": lines,
+    }
+
+
+def _line_sort(line_number: str) -> tuple[int, int | str]:
+    return (0, int(line_number)) if line_number.isdigit() else (1, line_number)
+
+
+def _observed_values(rows: list[dict[str, str]], field: str) -> list[str]:
+    return sorted({row[field].strip() for row in rows if row.get(field, "").strip()})
+
+
+def _looks_like_bea_nipa_query(query: str) -> bool:
+    normalized = query.strip().upper()
+    return bool(
+        re.search(r"\bNIPA\b", normalized)
+        or re.search(r"\bT[A-Z0-9]{5,6}\b", normalized)
+        or re.search(r"\b\d{1,2}\.\d{1,2}(?:\.\d{1,2})?\b", normalized)
+    )
+
+
+def _query_bea_table_id(query: str) -> str | None:
+    direct = re.search(r"\b(T[A-Z0-9]{5,6})\b", query.upper())
+    if direct:
+        return direct.group(1)
+    numbered = re.search(r"\b(\d{1,2})\.(\d{1,2})(?:\.(\d{1,2}))?\b", query)
+    if not numbered:
+        return None
+    section, table, subtable = numbered.groups()
+    canonical = f"T{int(section)}{int(table):02d}{int(subtable or 0):02d}"
+    return canonical if BEA_TABLE_ID.fullmatch(canonical) else None
+
+
+def search_bea_nipa_inventory(
+    inventory: list[dict[str, Any]],
+    query: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    exact_table = _query_bea_table_id(query)
+    tokens = set(re.findall(r"[a-z0-9]+", query.casefold()))
+    ranked: list[tuple[int, str, dict[str, Any]]] = []
+    for item in inventory:
+        table_id = item["TableName"]
+        if exact_table is not None and table_id != exact_table:
+            continue
+        description = item["Description"]
+        haystack = f"{table_id} {description}".casefold()
+        score = 1000 if exact_table == table_id else sum(1 for token in tokens if token in haystack)
+        if score <= 0:
+            continue
+        ranked.append((score, table_id, item))
+    ranked.sort(key=lambda value: (-value[0], value[1]))
+    return [
+        {
+            "source_dataset": "NIPA",
+            "table_id": item["TableName"],
+            "source_description": item["Description"],
+            "advertised_frequencies": item["advertised_frequencies"],
+            "curation": {"status": "uncurated", "catalog_id": None},
+            "tools": [ToolName.BEA_NIPA_TABLE.value],
+            "source": "bea_nipa_inventory",
+        }
+        for _, _, item in ranked[:limit]
+    ]
+
+
+def _filter_rows_by_date(
+    rows: list[dict[str, str]],
+    *,
+    start: date | None,
+    end: date | None,
+) -> list[dict[str, str]]:
+    if start is None and end is None:
+        return rows
+    filtered: list[dict[str, str]] = []
+    for row in rows:
+        observed = _safe_date(row.get("date"))
+        if observed is None:
+            continue
+        if start is not None and observed < start:
+            continue
+        if end is not None and observed > end:
+            continue
+        filtered.append(row)
+    return filtered
 
 
 def _safe_date(value: str | None) -> date | None:

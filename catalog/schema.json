@@ -109,8 +109,10 @@
           "then": {
             "properties": {
               "tools": {
-                "const": [
-                  "get_series"
+                "enum": [
+                  [
+                    "get_series"
+                  ]
                 ]
               }
             },
@@ -140,8 +142,13 @@
           "then": {
             "properties": {
               "tools": {
-                "const": [
-                  "get_series"
+                "enum": [
+                  [
+                    "bea_nipa_table"
+                  ],
+                  [
+                    "get_series"
+                  ]
                 ]
               }
             },
@@ -171,8 +178,10 @@
           "then": {
             "properties": {
               "tools": {
-                "const": [
-                  "get_series"
+                "enum": [
+                  [
+                    "get_series"
+                  ]
                 ]
               }
             },
@@ -202,8 +211,10 @@
           "then": {
             "properties": {
               "tools": {
-                "const": [
-                  "fiscaldata_query"
+                "enum": [
+                  [
+                    "fiscaldata_query"
+                  ]
                 ]
               }
             },
@@ -233,8 +244,10 @@
           "then": {
             "properties": {
               "tools": {
-                "const": [
-                  "z1_series"
+                "enum": [
+                  [
+                    "z1_series"
+                  ]
                 ]
               }
             },
@@ -264,8 +277,10 @@
           "then": {
             "properties": {
               "tools": {
-                "const": [
-                  "soma_holdings"
+                "enum": [
+                  [
+                    "soma_holdings"
+                  ]
                 ]
               }
             },
@@ -295,8 +310,10 @@
           "then": {
             "properties": {
               "tools": {
-                "const": [
-                  "get_file"
+                "enum": [
+                  [
+                    "get_file"
+                  ]
                 ]
               }
             },
@@ -326,8 +343,10 @@
           "then": {
             "properties": {
               "tools": {
-                "const": [
-                  "get_file"
+                "enum": [
+                  [
+                    "get_file"
+                  ]
                 ]
               }
             },
@@ -357,8 +376,10 @@
           "then": {
             "properties": {
               "tools": {
-                "const": [
-                  "get_file"
+                "enum": [
+                  [
+                    "get_file"
+                  ]
                 ]
               }
             },
@@ -1272,7 +1293,8 @@
         "get_file",
         "fiscaldata_query",
         "z1_series",
-        "soma_holdings"
+        "soma_holdings",
+        "bea_nipa_table"
       ],
       "title": "ToolName",
       "type": "string"

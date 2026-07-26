@@ -57,6 +57,7 @@ def test_mcp_lists_core_tools_and_serves_artifact_resource(tmp_path: Path) -> No
                 assert {tool.name for tool in listed.tools} == {
                     "find_series",
                     "get_series",
+                    "bea_nipa_table",
                     "fiscaldata_query",
                     "source_caveats",
                     "get_file",
@@ -66,6 +67,12 @@ def test_mcp_lists_core_tools_and_serves_artifact_resource(tmp_path: Path) -> No
                 }
                 get_series_tool = next(tool for tool in listed.tools if tool.name == "get_series")
                 assert "vintage_as_of" in get_series_tool.inputSchema["properties"]
+                bea_tool = next(tool for tool in listed.tools if tool.name == "bea_nipa_table")
+                assert bea_tool.inputSchema["properties"]["frequency"]["enum"] == [
+                    "A",
+                    "Q",
+                    "M",
+                ]
                 result = await client.call_tool(
                     "find_series",
                     {"query": "TGA Wednesday level", "limit": 2},
@@ -85,5 +92,44 @@ def test_mcp_lists_core_tools_and_serves_artifact_resource(tmp_path: Path) -> No
                 assert isinstance(content, BlobResourceContents)
                 assert content.mimeType == "application/octet-stream"
                 assert base64.b64decode(content.blob) == binary
+
+    anyio.run(exercise)
+
+
+def test_mcp_expected_errors_include_machine_readable_codes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("FRED_API_KEY", raising=False)
+
+    async def exercise() -> None:
+        with FiscusService(data_dir=tmp_path) as service:
+            server = create_server(service)
+            async with create_connected_server_and_client_session(server) as client:
+                missing_key = await client.call_tool(
+                    "get_series",
+                    {
+                        "dataset_id": "fred.sp500",
+                        "vintage_as_of": "2020-01-15",
+                    },
+                )
+                assert missing_key.isError is True
+                assert missing_key.structuredContent == {
+                    "code": "missing_key",
+                    "message": (
+                        "FRED_API_KEY is unset; fred.sp500 requires this environment "
+                        "variable for vintage_as_of"
+                    ),
+                }
+                assert missing_key.content[0].text.startswith("fiscus [missing_key]:")
+
+                catalog_absent = await client.call_tool(
+                    "source_caveats",
+                    {"dataset_id": "not.a.catalog.id"},
+                )
+                assert catalog_absent.isError is True
+                assert catalog_absent.structuredContent is not None
+                assert catalog_absent.structuredContent["code"] == "catalog_absent"
+                assert catalog_absent.content[0].text.startswith("fiscus [catalog_absent]:")
 
     anyio.run(exercise)
