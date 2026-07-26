@@ -40,18 +40,19 @@ class ToolName(StrEnum):
     FISCALDATA_QUERY = "fiscaldata_query"
     Z1_SERIES = "z1_series"
     SOMA_HOLDINGS = "soma_holdings"
+    BEA_NIPA_TABLE = "bea_nipa_table"
 
 
-EXECUTOR_TOOL = {
-    ExecutorKind.FRED: ToolName.GET_SERIES,
-    ExecutorKind.JSON_API: ToolName.GET_SERIES,
-    ExecutorKind.BLS: ToolName.GET_SERIES,
-    ExecutorKind.FISCALDATA: ToolName.FISCALDATA_QUERY,
-    ExecutorKind.Z1: ToolName.Z1_SERIES,
-    ExecutorKind.SOMA: ToolName.SOMA_HOLDINGS,
-    ExecutorKind.FILE: ToolName.GET_FILE,
-    ExecutorKind.LOCAL_FILE: ToolName.GET_FILE,
-    ExecutorKind.BROWSER_DOWNLOAD: ToolName.GET_FILE,
+EXECUTOR_TOOLS = {
+    ExecutorKind.FRED: frozenset({ToolName.GET_SERIES}),
+    ExecutorKind.JSON_API: frozenset({ToolName.GET_SERIES, ToolName.BEA_NIPA_TABLE}),
+    ExecutorKind.BLS: frozenset({ToolName.GET_SERIES}),
+    ExecutorKind.FISCALDATA: frozenset({ToolName.FISCALDATA_QUERY}),
+    ExecutorKind.Z1: frozenset({ToolName.Z1_SERIES}),
+    ExecutorKind.SOMA: frozenset({ToolName.SOMA_HOLDINGS}),
+    ExecutorKind.FILE: frozenset({ToolName.GET_FILE}),
+    ExecutorKind.LOCAL_FILE: frozenset({ToolName.GET_FILE}),
+    ExecutorKind.BROWSER_DOWNLOAD: frozenset({ToolName.GET_FILE}),
 }
 
 
@@ -294,11 +295,12 @@ class CatalogEntry(StrictModel):
     def validate_entry_contract(self) -> CatalogEntry:
         if not self.id.startswith(f"{self.family}."):
             raise ValueError("entry id must begin with '<family>.'")
-        expected_tool = EXECUTOR_TOOL[self.access.executor]
-        if self.tools != [expected_tool]:
+        compatible_tools = EXECUTOR_TOOLS[self.access.executor]
+        if len(self.tools) != 1 or self.tools[0] not in compatible_tools:
+            allowed = ", ".join(sorted(tool.value for tool in compatible_tools))
             raise ValueError(
-                f"{self.access.executor.value} entries must declare exactly "
-                f"tools: [{expected_tool.value}]"
+                f"{self.access.executor.value} entries must declare exactly one compatible "
+                f"tool from: {allowed}"
             )
         if self.access.executor == ExecutorKind.FRED:
             if not self.endpoint.series_id:

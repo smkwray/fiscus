@@ -46,6 +46,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     get_parser.add_argument("--refresh", action="store_true")
 
+    bea_parser = subparsers.add_parser(
+        "bea-nipa-table",
+        help="Fetch a complete BEA NIPA table for an explicit inclusive year range.",
+    )
+    bea_parser.add_argument("table_id", help="Canonical BEA TableName, such as T10106.")
+    bea_parser.add_argument("frequency", choices=["A", "Q", "M", "a", "q", "m"])
+    bea_parser.add_argument("start_year", type=int)
+    bea_parser.add_argument("end_year", type=int)
+    bea_parser.add_argument("--refresh", action="store_true")
+
     fiscal_parser = subparsers.add_parser(
         "fiscaldata-query",
         help="Query a curated Treasury FiscalData endpoint.",
@@ -174,6 +184,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     start=args.start,
                     end=args.end,
                     vintage_as_of=args.vintage_as_of,
+                    refresh=args.refresh,
+                )
+            elif args.command == "bea-nipa-table":
+                result = service.bea_nipa_table(
+                    args.table_id,
+                    args.frequency,
+                    args.start_year,
+                    args.end_year,
                     refresh=args.refresh,
                 )
             elif args.command == "fiscaldata-query":

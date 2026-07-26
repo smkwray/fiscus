@@ -32,16 +32,22 @@ def preview_rows(
     rows: list[dict[str, Any]],
     entry: CatalogEntry,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int] | None]:
+    return preview_rows_for_fields(
+        rows,
+        [*entry.response.date_fields, *entry.response.value_fields],
+    )
+
+
+def preview_rows_for_fields(
+    rows: list[dict[str, Any]],
+    preferred_fields: Iterable[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int] | None]:
     head = rows[:3]
     tail = rows[-2:] if len(rows) > 3 else []
     columns = list(rows[0]) if rows else []
     if len(columns) <= PREVIEW_COLUMN_CAP:
         return head, tail, None
-    keep = [
-        field
-        for field in [*entry.response.date_fields, *entry.response.value_fields]
-        if field in columns
-    ]
+    keep = [field for field in preferred_fields if field in columns]
     for column in columns:
         if len(keep) >= PREVIEW_COLUMN_CAP:
             break

@@ -70,19 +70,29 @@ statically confirmed nonmachine route. A live HTTP 403 or 451 from a machine ent
 reported as `source_access_denied`; it does not by itself establish a permanent
 browser-only fact. HTTP 404 or 410 is reported separately as `source_removed`.
 
-Each executor has exactly one executable tool contract:
+Each catalog entry declares exactly one executable public fetch operation, selected
+from the operations compatible with its transport executor:
 
-| Executor | Required `tools` value |
+| Executor | Compatible one-item `tools` values |
 |---|---|
-| `fred`, `json_api`, `bls` | `[get_series]` |
+| `fred`, `bls` | `[get_series]` |
+| `json_api` | `[get_series]` or `[bea_nipa_table]` |
 | `fiscaldata` | `[fiscaldata_query]` |
 | `z1` | `[z1_series]` |
 | `soma` | `[soma_holdings]` |
 | `file`, `local_file`, `browser_download` | `[get_file]` |
 
-Duplicate or mismatched tool declarations fail both Pydantic and generated-JSON-Schema
-validation. `browser_download` and `browser_download_only` also imply one another; a
-catalog entry cannot advertise a machine route through the browser-only executor.
+Duplicate, multi-operation, or incompatible declarations fail both Pydantic and
+generated-JSON-Schema validation. `browser_download` and `browser_download_only` also
+imply one another; a catalog entry cannot advertise a machine route through the
+browser-only executor.
+
+The parameterized `bea_nipa_table` route reaches source-advertised NIPA tables without
+constructing synthetic catalog entries. Its source inventory is cached in the platform
+Fiscus SQLite cache under the internal `bea_nipa_inventory` identity; an apparent table
+or frequency miss forces one inventory refresh before rejection. Uncurated discovery
+results omit `history_start`, `units`, and `verified_on`, and curation is applied only as
+a response-time overlay for an exact table/frequency catalog pair.
 
 ## Conditional caveats
 

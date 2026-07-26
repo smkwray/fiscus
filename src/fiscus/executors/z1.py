@@ -83,12 +83,22 @@ class Z1Executor:
 
     def search_series(self, query: str, limit: int) -> list[dict[str, str | bool | dict[str, str]]]:
         """Search the current package data dictionary without a curated-code registry."""
+        # Keep exact mnemonics out of the description search: a near match is a
+        # different economic concept, not an answer to the requested mnemonic.
+        from fiscus.search import _exact_z1_mnemonic
+
+        exact_code = _exact_z1_mnemonic(query)
+        zip_path, manifest = self._ensure_package(refresh=False)
+        index = self._series_index(zip_path)
+        if exact_code is not None:
+            meta = index.get(exact_code)
+            return [] if meta is None else [_search_result(meta, manifest, exact=True)]
+
         query_tokens = _search_tokens(query)
         if not query_tokens:
             return []
-        zip_path, manifest = self._ensure_package(refresh=False)
         matches: list[tuple[int, Z1SeriesMeta]] = []
-        for meta in self._series_index(zip_path).values():
+        for meta in index.values():
             frequency = "annual" if meta.code.endswith(".A") else "quarterly"
             text = " ".join((meta.code, meta.description, meta.table, meta.units, frequency))
             candidate_tokens = _search_tokens(text)
@@ -99,30 +109,9 @@ class Z1Executor:
             normalized_text = " ".join(sorted(candidate_tokens))
             if normalized_query == normalized_text:
                 score += 100
-            if query.strip().upper().removeprefix("BOGZ1").replace(" ", "") in {
-                meta.code,
-                meta.code.replace(".", ""),
-            }:
-                score += 200
             matches.append((score, meta))
         matches.sort(key=lambda item: (-item[0], item[1].code))
-        return [
-            {
-                "id": meta.code,
-                "series_id": meta.code,
-                "title": meta.description,
-                "family": "z1",
-                "units": meta.units,
-                "frequency": "annual" if meta.code.endswith(".A") else "quarterly",
-                "kind": meta.code[:2],
-                "table": meta.table,
-                "curated": False,
-                "source": "z1_data_dictionary",
-                "release_date": manifest["release_date"],
-                "tools": {"z1_series": {"code": meta.code, "kind": meta.code[:2]}},
-            }
-            for _, meta in matches[:limit]
-        ]
+        return [_search_result(meta, manifest, exact=False) for _, meta in matches[:limit]]
 
     def _ensure_package(self, *, refresh: bool) -> tuple[Path, dict]:
         release_date, _ = self._current_release_date()
@@ -288,6 +277,27 @@ def _validate_package(zip_path: Path, manifest: Any, expected_release_date: str)
         raise SourceRequestError("Z.1 package cache is not a valid zip archive") from None
     if corrupt_member is not None:
         raise SourceRequestError(f"Z.1 package cache has a corrupt ZIP member: {corrupt_member}")
+
+
+def _search_result(
+    meta: Z1SeriesMeta, manifest: dict[str, Any], *, exact: bool
+) -> dict[str, str | bool | dict[str, str]]:
+    result: dict[str, str | bool | dict[str, str]] = {
+        "id": meta.code,
+        "series_id": meta.code,
+        "title": meta.description,
+        "family": "z1",
+        "frequency": "annual" if meta.code.endswith(".A") else "quarterly",
+        "kind": meta.code[:2],
+        "table": meta.table,
+        "curated": False,
+        "source": "z1_data_dictionary",
+        "release_date": manifest["release_date"],
+        "tools": {"z1_series": {"code": meta.code, "kind": meta.code[:2]}},
+    }
+    if not exact:
+        result["units"] = meta.units
+    return result
 
 
 def _search_tokens(value: str) -> set[str]:

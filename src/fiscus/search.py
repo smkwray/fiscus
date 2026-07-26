@@ -8,6 +8,10 @@ from typing import Any
 from fiscus.models import CatalogEntry, ExecutorKind
 
 TOKEN_RE = re.compile(r"[a-z0-9]+")
+_Z1_MNEMONIC_RE = re.compile(
+    r"(?:BOGZ1)?(?:FA|FC|FG|FI|FL|FR|FS|FU|FV|LA|LM|PC)\d{9}(?:\.?[AQ])?",
+    re.IGNORECASE,
+)
 
 QUERY_ALIASES: dict[str, tuple[str, ...]] = {
     "tga": ("treasury general account", "operating cash balance"),
@@ -29,6 +33,10 @@ def find_series(
 ) -> list[dict[str, Any]]:
     normalized_query = _normalize(query)
     if not normalized_query:
+        return []
+    if family == "z1" and _exact_z1_mnemonic(query) is not None:
+        # Exact package mnemonics must go through the Z.1 data dictionary rather
+        # than be scored as approximate matches against curated descriptions.
         return []
     query_tokens = set(_tokens(normalized_query))
     alias_tokens: set[str] = set()
@@ -55,6 +63,17 @@ def find_series(
 
     candidates.sort(key=lambda item: (-item[0], item[1].id))
     return [_result(score, entry, reasons) for score, entry, reasons in candidates[:limit]]
+
+
+def _exact_z1_mnemonic(query: str) -> str | None:
+    """Return a canonical Z.1 mnemonic only for a complete mnemonic query."""
+    compact = "".join(query.split())
+    if not _Z1_MNEMONIC_RE.fullmatch(compact):
+        return None
+    # Imported lazily because service imports this module to score its catalog.
+    from fiscus.service import normalize_z1_code
+
+    return normalize_z1_code(compact)
 
 
 def _score_entry(
@@ -195,7 +214,9 @@ def vintage_support(executor: ExecutorKind, family: str) -> dict[str, Any]:
     return {
         "supported": False,
         "reason": (
-            f"{family} does not expose a FRED/ALFRED historical information-date route"
+            f"This catalog entry's {family} executor surface does not provide historical "
+            "information-date retrieval. This does not determine whether a separate "
+            "FRED/ALFRED mirror exists for the same economic concept; check mirrors per series."
         ),
     }
 

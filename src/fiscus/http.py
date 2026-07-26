@@ -47,6 +47,7 @@ class HttpRequester:
         params: Mapping[str, Any] | None = None,
         policy: RetryPolicy = DEFAULT_RETRY_POLICY,
         secret_params: Iterable[str] = (),
+        return_error_statuses: Iterable[int] = (),
     ) -> httpx.Response:
         return self._request(
             "GET",
@@ -54,6 +55,7 @@ class HttpRequester:
             params=params,
             policy=policy,
             secret_params=secret_params,
+            return_error_statuses=return_error_statuses,
         )
 
     def head(
@@ -63,6 +65,7 @@ class HttpRequester:
         params: Mapping[str, Any] | None = None,
         policy: RetryPolicy = DEFAULT_RETRY_POLICY,
         secret_params: Iterable[str] = (),
+        return_error_statuses: Iterable[int] = (),
     ) -> httpx.Response:
         return self._request(
             "HEAD",
@@ -70,6 +73,7 @@ class HttpRequester:
             params=params,
             policy=policy,
             secret_params=secret_params,
+            return_error_statuses=return_error_statuses,
         )
 
     def _request(
@@ -80,10 +84,10 @@ class HttpRequester:
         params: Mapping[str, Any] | None = None,
         policy: RetryPolicy = DEFAULT_RETRY_POLICY,
         secret_params: Iterable[str] = (),
+        return_error_statuses: Iterable[int] = (),
     ) -> httpx.Response:
-        protected_names = SECRET_QUERY_PARAMS | frozenset(
-            name.casefold() for name in secret_params
-        )
+        protected_names = SECRET_QUERY_PARAMS | frozenset(name.casefold() for name in secret_params)
+        inspectable_error_statuses = frozenset(return_error_statuses)
         has_credentials = any(
             key.casefold() in protected_names and value not in {None, ""}
             for key, value in (params or {}).items()
@@ -109,6 +113,8 @@ class HttpRequester:
 
             if response.status_code not in RETRYABLE_STATUS:
                 if response.is_error:
+                    if response.status_code in inspectable_error_statuses:
+                        return response
                     safe_url = redact_url(str(response.request.url), protected_names)
                     detail = "" if has_credentials else _response_detail(response)
                     error_type: type[SourceRequestError]

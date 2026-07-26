@@ -11,10 +11,14 @@ import pytest
 from fiscus.cache import canonical_params
 from fiscus.errors import (
     CacheCollisionError,
+    InvalidCredentialError,
     InvalidVintageError,
     MissingKeyError,
+    SourceIdentifierNotFoundError,
     SourceRequestError,
     UnsupportedVintageError,
+    VintageHistoryAbsentError,
+    VintagePrecedesHistoryError,
 )
 from fiscus.service import FiscusService
 
@@ -165,6 +169,22 @@ def test_keyed_fred_same_day_refresh_uses_http_revision_identity(
     client.close()
 
 
+ALFRED_HISTORY_ERROR = (
+    "Bad Request.  The series does not exist in ALFRED but may exist in FRED.  "
+    "Try setting realtime_start and realtime_end to today's date or removing the "
+    "realtime_start and realtime_end variables."
+)
+FRED_SERIES_ABSENT_ERROR = "Bad Request.  The series does not exist."
+
+
+def _fred_error(message: str, request: httpx.Request) -> httpx.Response:
+    return httpx.Response(
+        400,
+        json={"error_code": 400, "error_message": message},
+        request=request,
+    )
+
+
 def _alfred_payload(
     vintage: str,
     observations: list[tuple[str, str]],
@@ -277,12 +297,180 @@ def test_alfred_requires_key_and_rejects_non_fred_without_network(
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     with FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service:
-        with pytest.raises(MissingKeyError):
+        with pytest.raises(MissingKeyError, match="FRED_API_KEY is unset") as absent:
             service.get_series("fred.wdtgal", vintage_as_of="2020-01-15")
+        assert absent.value.code == "missing_key"
+
+        monkeypatch.setenv("FRED_API_KEY", "")
+        with pytest.raises(MissingKeyError, match="FRED_API_KEY is unset") as empty:
+            service.get_series("fred.wdtgal", vintage_as_of="2020-01-15")
+        assert empty.value.code == "missing_key"
+
         with pytest.raises(UnsupportedVintageError):
             service.get_series("bls.lns14000000", vintage_as_of="2020-01-15")
 
     assert calls == 0
+    client.close()
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        (
+            "Bad Request.  The value for variable api_key is not registered.  "
+            "Read https://fred.stlouisfed.org/docs/api/api_key.html for more information."
+        ),
+        (
+            "Bad Request.  The value for variable api_key is not a 32 character "
+            "alpha-numeric lower-case string.  Read "
+            "https://fred.stlouisfed.org/docs/api/api_key.html for more information."
+        ),
+    ],
+)
+def test_alfred_rejected_key_is_a_credential_fault(
+    message: str,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    secret = "invalid-fred-key"
+    monkeypatch.setenv("FRED_API_KEY", secret)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/fred/series/observations"
+        return _fred_error(message, request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with (
+        FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service,
+        pytest.raises(InvalidCredentialError, match="FRED_API_KEY") as captured,
+    ):
+        service.get_series("fred.wdtgal", vintage_as_of="2020-01-15")
+
+    assert captured.value.code == "credential_rejected"
+    assert "not registered or invalid" in str(captured.value)
+    assert secret not in str(captured.value)
+    client.close()
+
+
+def test_alfred_series_with_no_realtime_history_is_distinct(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("FRED_API_KEY", "valid-fred-key")
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path == "/fred/series/observations":
+            return _fred_error(ALFRED_HISTORY_ERROR, request)
+        if request.url.path == "/fred/series/vintagedates":
+            return _fred_error(ALFRED_HISTORY_ERROR, request)
+        assert request.url.path == "/fred/series"
+        return httpx.Response(200, json={"seriess": [{"id": "WDTGAL"}]}, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with (
+        FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service,
+        pytest.raises(
+            VintageHistoryAbsentError,
+            match="no ALFRED realtime history",
+        ) as captured,
+    ):
+        service.get_series("fred.wdtgal", vintage_as_of="2020-01-15")
+
+    assert captured.value.code == "vintage_history_absent"
+    assert paths == [
+        "/fred/series/observations",
+        "/fred/series/vintagedates",
+        "/fred/series",
+    ]
+    client.close()
+
+
+def test_alfred_vintage_before_first_realtime_date_names_boundary(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("FRED_API_KEY", "valid-fred-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/fred/series/observations":
+            return _fred_error(ALFRED_HISTORY_ERROR, request)
+        assert request.url.path == "/fred/series/vintagedates"
+        return httpx.Response(
+            200,
+            json={"count": 2, "vintage_dates": ["2019-03-07", "2020-03-06"]},
+            request=request,
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with (
+        FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service,
+        pytest.raises(VintagePrecedesHistoryError, match="2019-03-07") as captured,
+    ):
+        service.get_series("fred.wdtgal", vintage_as_of="2018-01-01")
+
+    assert captured.value.code == "vintage_precedes_history"
+    client.close()
+
+
+def test_alfred_nonexistent_identifier_names_z1_prefix_hazard(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("FRED_API_KEY", "valid-fred-key")
+    requested_ids: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_ids.append(request.url.params["series_id"])
+        if request.url.path == "/fred/series/observations":
+            return _fred_error(ALFRED_HISTORY_ERROR, request)
+        if request.url.path == "/fred/series/vintagedates":
+            return _fred_error(FRED_SERIES_ABSENT_ERROR, request)
+        assert request.url.path == "/fred/series"
+        return _fred_error(FRED_SERIES_ABSENT_ERROR, request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with (
+        FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service,
+        pytest.raises(SourceIdentifierNotFoundError, match="wrong") as captured,
+    ):
+        service.get_series("fred.bogz1fl153061105q", vintage_as_of="2019-06-06")
+
+    assert captured.value.code == "source_identifier_absent"
+    assert "two-letter prefix encodes the economic concept" in str(captured.value)
+    assert "FL, LM, FA, and FU are distinct concepts" in str(captured.value)
+    assert "did not guess or retry a different prefix" in str(captured.value)
+    assert FRED_SERIES_ABSENT_ERROR in str(captured.value)
+    assert set(requested_ids) == {"BOGZ1FL153061105Q"}
+    client.close()
+
+
+def test_alfred_unexplained_error_after_history_start_preserves_upstream_detail(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("FRED_API_KEY", "valid-fred-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/fred/series/observations":
+            return _fred_error(ALFRED_HISTORY_ERROR, request)
+        assert request.url.path == "/fred/series/vintagedates"
+        return httpx.Response(
+            200,
+            json={"count": 1, "vintage_dates": ["2019-03-07"]},
+            request=request,
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with (
+        FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service,
+        pytest.raises(SourceRequestError, match="does not exist in ALFRED") as captured,
+    ):
+        service.get_series("fred.wdtgal", vintage_as_of="2020-01-15")
+
+    assert captured.value.code == "source_request_failed"
+    assert ALFRED_HISTORY_ERROR in str(captured.value)
     client.close()
 
 
@@ -356,9 +544,7 @@ def test_alfred_paginates_contiguously_and_accepts_empty_history(
         offsets.append(offset)
         if vintage == "2020-01-15":
             page = (
-                [("2018-01-01", "1"), ("2019-01-01", "2")]
-                if offset == 0
-                else [("2020-01-01", "3")]
+                [("2018-01-01", "1"), ("2019-01-01", "2")] if offset == 0 else [("2020-01-01", "3")]
             )
             return httpx.Response(
                 200,

@@ -12,7 +12,7 @@ import yaml
 from pydantic import ValidationError
 
 from fiscus.errors import CatalogError, DatasetNotFoundError
-from fiscus.models import EXECUTOR_TOOL, AccessMode, CatalogEntry, CatalogFile, ExecutorKind
+from fiscus.models import EXECUTOR_TOOLS, AccessMode, CatalogEntry, CatalogFile, ExecutorKind
 
 CATALOG_SCHEMA_VERSION = 1
 FAMILY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
@@ -129,11 +129,15 @@ def catalog_schema_json() -> str:
                     "required": ["access"],
                 },
                 "then": {
-                    "properties": {"tools": {"const": [tool.value]}},
+                    "properties": {
+                        "tools": {
+                            "enum": [[tool.value] for tool in sorted(tools, key=str)]
+                        }
+                    },
                     "required": ["tools"],
                 },
             }
-            for executor, tool in EXECUTOR_TOOL.items()
+            for executor, tools in EXECUTOR_TOOLS.items()
         ],
         {
             "if": {
