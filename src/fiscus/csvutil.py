@@ -32,15 +32,31 @@ def delimited_bytes_to_rows(
     *,
     delimiter: str = ",",
     required_fields: Iterable[str] = (),
+    selected_fields: Iterable[str] | None = None,
+    duplicate_fields_must_agree: Iterable[str] = (),
 ) -> list[dict[str, str]]:
+    """Parse strict rows, optionally extracting only uniquely identified columns.
+
+    Selection tolerates duplicate unselected headers while validating each row's
+    full width. Explicit repeated selected fields require exact per-row agreement;
+    every other required or selected column must remain unique.
+    """
     text = data.decode("utf-8-sig")
     reader = csv.reader(io.StringIO(text), delimiter=delimiter, strict=True)
     headers = next(reader, None)
     if not headers or any(not header.strip() for header in headers):
         raise ValueError("tabular data has an empty or missing header")
-    if len(headers) != len(set(headers)):
+    selected = set(headers) if selected_fields is None else set(selected_fields)
+    required = set(required_fields).union(selected)
+    agreement_fields = set(duplicate_fields_must_agree)
+    if not agreement_fields.issubset(selected):
+        raise ValueError("duplicate agreement checks require selected fields")
+    checked_headers = [
+        header for header in headers if header in required and header not in agreement_fields
+    ]
+    if len(checked_headers) != len(set(checked_headers)):
         raise ValueError("tabular data has duplicate headers")
-    missing = sorted(set(required_fields).difference(headers))
+    missing = sorted(required.difference(headers))
     if missing:
         raise ValueError(f"tabular data omitted required columns: {', '.join(missing)}")
     rows = []
@@ -51,7 +67,15 @@ def delimited_bytes_to_rows(
             raise ValueError(
                 f"tabular row {reader.line_num} has {len(values)} fields; expected {len(headers)}"
             )
-        rows.append(dict(zip(headers, values, strict=True)))
+        row: dict[str, str] = {}
+        for header, value in zip(headers, values, strict=True):
+            if header in selected:
+                if header in row and row[header] != value:
+                    raise ValueError(
+                        f"tabular row {reader.line_num} has conflicting duplicate {header} cells"
+                    )
+                row[header] = value
+        rows.append(row)
     return rows
 
 

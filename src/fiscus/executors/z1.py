@@ -215,7 +215,11 @@ class Z1Executor:
         with zipfile.ZipFile(io.BytesIO(package)) as archive:
             content = archive.read(meta.csv_member)
         try:
-            source_rows = delimited_bytes_to_rows(content, required_fields=("date", meta.code))
+            source_rows = delimited_bytes_to_rows(
+                content,
+                selected_fields=("date", meta.code),
+                duplicate_fields_must_agree=(meta.code,),
+            )
         except (UnicodeDecodeError, csv.Error, ValueError) as exc:
             raise SourceSchemaChangedError(
                 f"Z.1 table {meta.csv_member} is not valid tabular data: {exc}"

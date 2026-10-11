@@ -223,6 +223,74 @@ def test_z1_rejects_invalid_utf8_dictionary_inside_valid_zip(tmp_path: Path) -> 
         service.z1_series("FL313020005.Q", "FL")
 
 
+def test_z1_extracts_unique_selected_series_with_duplicate_unselected_columns(
+    tmp_path: Path,
+) -> None:
+    # The official S1M_i_q.csv repeats unrelated FU columns alongside unique
+    # FR/FC net-worth columns. Unselected columns cannot affect extraction.
+    package = _package_with_member(
+        "csv/F2_2_s.csv",
+        b"date,FU313020005.Q,FL313020005.Q,FU313020005.Q\n2026:Q1,1,42,999\n",
+    )
+    with (
+        _client(package, {}) as client,
+        FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service,
+    ):
+        result = service.z1_series("FL313020005.Q", "FL")
+
+    assert result["preview"]["head"] == [{"date": "2026-03-31", "value": "42"}]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"date,FL313020005.Q,date\n2026:Q1,42,2026:Q1\n",
+        b"date,FL313020005.Q,FU313020005.Q,FU313020005.Q\n2026:Q1,42,1\n",
+        b"date,FL313020005.Q,FU313020005.Q,FU313020005.Q\n2026:Q1,42,1,1,999\n",
+    ],
+    ids=["date-duplicate", "short-unselected", "extra-unselected"],
+)
+def test_z1_selection_preserves_ambiguity_and_full_row_width_checks(
+    tmp_path: Path, content: bytes
+) -> None:
+    with (
+        _client(_package_with_member("csv/F2_2_s.csv", content), {}) as client,
+        FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service,
+        pytest.raises(SourceSchemaChangedError),
+    ):
+        service.z1_series("FL313020005.Q", "FL")
+
+
+def test_z1_accepts_duplicate_requested_columns_only_when_every_row_agrees(tmp_path: Path) -> None:
+    package = _package_with_member(
+        "csv/F2_2_s.csv",
+        b"date,FL313020005.Q,FL313020005.Q\n2025:Q4,12,12\n2026:Q1,42,42\n",
+    )
+    with (
+        _client(package, {}) as client,
+        FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service,
+    ):
+        result = service.z1_series("FL313020005.Q", "FL")
+
+    assert result["preview"]["head"] == [
+        {"date": "2025-12-31", "value": "12"},
+        {"date": "2026-03-31", "value": "42"},
+    ]
+
+
+def test_z1_rejects_later_duplicate_conflict_before_date_filtering(tmp_path: Path) -> None:
+    package = _package_with_member(
+        "csv/F2_2_s.csv",
+        b"date,FL313020005.Q,FL313020005.Q\n2025:Q4,12,12\n2026:Q1,42,999\n",
+    )
+    with (
+        _client(package, {}) as client,
+        FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service,
+        pytest.raises(SourceSchemaChangedError, match="conflicting duplicate"),
+    ):
+        service.z1_series("FL313020005.Q", "FL", end="2025-12-31")
+
+
 def test_z1_download_binds_release_to_get_response_when_head_changes(tmp_path: Path) -> None:
     package = _package_bytes()
 
