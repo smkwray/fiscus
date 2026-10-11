@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any, Literal
 
 from fiscus.errors import (
@@ -14,6 +14,7 @@ from fiscus.errors import (
 )
 from fiscus.executors.base import FetchResult
 from fiscus.http import (
+    SECRET_QUERY_PARAMS,
     HttpRequester,
     RetryPolicy,
     redact_url,
@@ -160,11 +161,14 @@ class JsonApiExecutor:
 
         if spec.date_fields and (start or end):
             field = spec.date_fields[0]
+            lower = date.fromisoformat(start) if start else None
+            upper = date.fromisoformat(end) if end else None
             rows = [
                 row
                 for row in rows
-                if (not start or row.get(field, "") >= start)
-                and (not end or row.get(field, "") <= end)
+                if (observed := _source_calendar_date(row.get(field, ""))) is not None
+                and (lower is None or observed >= lower)
+                and (upper is None or observed <= upper)
             ]
 
         source_metadata: dict[str, Any] = {
@@ -176,10 +180,15 @@ class JsonApiExecutor:
 
         return FetchResult(
             rows=rows,
-            source_url=redact_url(str(response.request.url)),
+            source_url=redact_url(
+                str(response.request.url),
+                SECRET_QUERY_PARAMS | frozenset(
+                    (spec.api_key_param.casefold(),) if spec.api_key_param else ()
+                ),
+            ),
             retrieved_at_utc=retrieved_at,
             vintage=source_vintage_from_headers(response.headers, retrieved_at),
-            source_metadata=source_metadata,
+            source_metadata=_redact_strings(source_metadata, secrets),
         )
 
 
@@ -249,7 +258,10 @@ def safe_bea_results_metadata(payload: Any, secrets: tuple[str, ...] = ()) -> di
 
 def _redact_strings(value: Any, secrets: tuple[str, ...]) -> Any:
     if isinstance(value, dict):
-        return {str(key): _redact_strings(item, secrets) for key, item in value.items()}
+        return {
+            _redact_strings(str(key), secrets): _redact_strings(item, secrets)
+            for key, item in value.items()
+        }
     if isinstance(value, list):
         return [_redact_strings(item, secrets) for item in value]
     if isinstance(value, tuple):
@@ -264,7 +276,12 @@ def bea_period_end(period: str) -> str:
     """BEA TimePeriod (2025Q1, 2025M03, 2025) -> period-end ISO date."""
     token = period.strip().upper()
     quarter_end = {"1": "03-31", "2": "06-30", "3": "09-30", "4": "12-31"}
-    if len(token) == 6 and token[4] == "Q" and token[5] in quarter_end:
+    if (
+        len(token) == 6
+        and token[:4].isdigit()
+        and token[4] == "Q"
+        and token[5] in quarter_end
+    ):
         return f"{token[:4]}-{quarter_end[token[5]]}"
     if (
         len(token) == 7
@@ -277,6 +294,17 @@ def bea_period_end(period: str) -> str:
     if len(token) == 4 and token.isdigit():
         return f"{token}-12-31"
     return ""
+
+
+def _source_calendar_date(value: str) -> date | None:
+    """Compare calendar-date bounds while retaining the source's ISO timestamp."""
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        try:
+            return datetime.fromisoformat(value).date()
+        except ValueError:
+            return None
 
 
 def resolve_data_path(payload: Any, path: str) -> Any:

@@ -148,6 +148,59 @@ def test_noncredentialed_http_error_keeps_bounded_body_detail() -> None:
     client.close()
 
 
+@pytest.mark.parametrize("credential_location", ["query", "userinfo", "header", "client-auth"])
+def test_credentials_outside_params_do_not_leak_in_http_errors(
+    credential_location: str,
+) -> None:
+    secret = "sensitive-secret-value"
+    url = "https://example.test/data"
+    client_options: dict = {}
+    if credential_location == "query":
+        url += f"?api_key={secret}"
+    elif credential_location == "userinfo":
+        url = f"https://user:{secret}@example.test/data"
+    elif credential_location == "header":
+        client_options["headers"] = {"Authorization": f"Bearer {secret}"}
+    else:
+        client_options["auth"] = ("user", secret)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            text=f"reflected {secret} {request.url} {request.headers.get('authorization', '')}",
+            headers={"content-type": "text/plain"},
+            request=request,
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handler), **client_options) as client,
+        pytest.raises(SourceRequestError) as captured,
+    ):
+        HttpRequester(client, sleep=lambda _: None).get(url)
+    rendered = "".join(traceback.format_exception(captured.value))
+    assert secret not in rendered
+    assert "reflected" not in rendered
+    assert captured.value.__cause__ is None
+
+
+def test_url_userinfo_is_redacted_on_transport_failure() -> None:
+    secret = "sensitive-secret-value"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(f"failed for {request.url}", request=request)
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handler)) as client,
+        pytest.raises(SourceRequestError) as captured,
+    ):
+        HttpRequester(client, sleep=lambda _: None).get(
+            f"https://user:{secret}@example.test/data",
+            policy=RetryPolicy(attempts=1, politeness_delay_seconds=0),
+        )
+    assert secret not in "".join(traceback.format_exception(captured.value))
+    assert "REDACTED" in str(captured.value)
+
+
 def test_default_user_agent_carries_plus_url_comment() -> None:
     """The FRED edge silently stalls user agents without a parenthetical
     comment containing a ``+<url>`` token (``fiscus/0.1.0`` and even

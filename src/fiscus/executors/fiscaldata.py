@@ -44,6 +44,19 @@ class FiscalDataExecutor:
 
         query = dict(entry.endpoint.default_params)
         query.update(requested)
+        if "fields" in requested and "sort" not in requested:
+            # FiscalData rejects sort keys excluded from the selected fields.
+            # Preserve the applicable default ordering without widening the
+            # owner's explicit projection or changing an explicitly given sort.
+            fields = {field.strip() for field in requested["fields"].split(",")}
+            sort_fields = [
+                field.strip() for field in query.get("sort", "").split(",")
+                if field.strip().lstrip("+-") in fields
+            ]
+            if sort_fields:
+                query["sort"] = ",".join(sort_fields)
+            else:
+                query.pop("sort", None)
         try:
             page_size = int(
                 query.get("page[size]") or entry.response.pagination.default_page_size or 100
@@ -58,6 +71,7 @@ class FiscalDataExecutor:
         page_urls: list[str] = []
         retrieved_at = datetime.now(UTC).isoformat()
         first_response = None
+        field_metadata: dict[str, Any] = {}
         total_pages: int | None = None
         next_link: Any = None
 
@@ -78,15 +92,27 @@ class FiscalDataExecutor:
                 raise SourceRequestError(
                     f"FiscalData returned invalid JSON for {entry.id}"
                 ) from exc
+            if not isinstance(payload, dict):
+                raise SourceRequestError(
+                    f"FiscalData returned a non-object response for {entry.id}"
+                )
             page_rows = payload.get(entry.response.data_path or "data")
             if not isinstance(page_rows, list):
                 raise SourceRequestError(
                     "FiscalData response omitted "
                     f"{entry.response.data_path or 'data'} for {entry.id}"
                 )
-            rows.extend(row for row in page_rows if isinstance(row, dict))
+            if any(not isinstance(row, dict) for row in page_rows):
+                raise SourceRequestError(f"FiscalData returned a malformed row for {entry.id}")
+            rows.extend(page_rows)
 
             meta = payload.get("meta") or {}
+            if page_number == 1 and isinstance(meta, dict):
+                field_metadata = {
+                    name: meta[name]
+                    for name in ("labels", "dataTypes", "dataFormats")
+                    if isinstance(meta.get(name), dict)
+                }
             if total_pages is None and isinstance(meta, dict):
                 raw_total_pages = meta.get("total-pages")
                 try:
@@ -125,6 +151,7 @@ class FiscalDataExecutor:
                 "pages_fetched": len(page_urls),
                 "page_urls": page_urls,
                 "reported_total_pages": total_pages,
+                "field_metadata": field_metadata,
                 "http": selected_http_metadata(first_response.headers),
             },
         )

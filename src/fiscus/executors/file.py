@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import csv
 import hashlib
-import io
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from urllib.parse import urlsplit
 
-from fiscus.errors import SourceRequestError
+from fiscus.csvutil import delimited_bytes_to_rows
+from fiscus.errors import SourceRequestError, SourceSchemaChangedError
 from fiscus.executors.base import FetchResult
 from fiscus.http import (
     HttpRequester,
@@ -45,14 +45,16 @@ class FileExecutor:
 
         if entry.response.format in {ResponseFormat.CSV, ResponseFormat.TSV}:
             delimiter = "," if entry.response.format == ResponseFormat.CSV else "\t"
-            text = content.decode("utf-8-sig", "replace")
-            reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
-            if not reader.fieldnames:
-                raise SourceRequestError(f"{entry.id} file has no header row")
-            rows = [
-                {str(key): "" if value is None else str(value) for key, value in row.items()}
-                for row in reader
-            ]
+            try:
+                rows = delimited_bytes_to_rows(
+                    content,
+                    delimiter=delimiter,
+                    required_fields=[*entry.response.date_fields, *entry.response.value_fields],
+                )
+            except (ValueError, csv.Error) as exc:
+                raise SourceSchemaChangedError(
+                    f"{entry.id} returned malformed {entry.response.format.value} data: {exc}"
+                ) from None
             data_file = (
                 "data.csv" if entry.response.format == ResponseFormat.CSV else "data.tsv"
             )

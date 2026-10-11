@@ -7,6 +7,7 @@ import re
 from datetime import UTC, date, datetime
 from typing import Any
 
+from fiscus.csvutil import delimited_bytes_to_rows
 from fiscus.errors import (
     InvalidCredentialError,
     MissingKeyError,
@@ -82,7 +83,7 @@ class FredExecutor:
             payload = response.json()
         except (SourceRequestError, ValueError):
             return None
-        seriess = payload.get("seriess")
+        seriess = payload.get("seriess") if isinstance(payload, dict) else None
         if not isinstance(seriess, list) or not seriess or not isinstance(seriess[0], dict):
             return None
         return {str(key): str(value) for key, value in seriess[0].items()}
@@ -105,7 +106,7 @@ class FredExecutor:
             payload = response.json()
         except (SourceRequestError, ValueError):
             return []
-        seriess = payload.get("seriess")
+        seriess = payload.get("seriess") if isinstance(payload, dict) else None
         if not isinstance(seriess, list):
             return []
         return [
@@ -139,13 +140,20 @@ class FredExecutor:
             payload = response.json()
         except ValueError as exc:
             raise SourceRequestError(f"FRED returned invalid JSON for {entry.id}") from exc
+        if not isinstance(payload, dict):
+            raise SourceRequestError(f"FRED returned a non-object response for {entry.id}")
         observations = payload.get("observations")
         if not isinstance(observations, list):
             raise SourceRequestError(f"FRED response omitted observations for {entry.id}")
+        if (
+            "count" in payload
+            and _response_integer(payload, "count", entry.id) != len(observations)
+        ):
+            raise SourceRequestError(f"FRED returned an incomplete observation page for {entry.id}")
         rows = []
         for observation in observations:
             if not isinstance(observation, dict):
-                continue
+                raise SourceRequestError(f"FRED returned a malformed row for {entry.id}")
             rows.append(
                 {
                     "date": observation.get("date", ""),
@@ -167,7 +175,7 @@ class FredExecutor:
                 "offset",
                 "limit",
             )
-            if payload.get(name) not in {None, ""}
+            if payload.get(name) is not None and payload.get(name) != ""
         }
         return FetchResult(
             rows=rows,
@@ -364,7 +372,9 @@ class FredExecutor:
                 raise SourceRequestError(
                     f"FRED/ALFRED returned invalid vintage-date JSON for {entry.id}"
                 ) from exc
-            vintage_dates = dates_payload.get("vintage_dates")
+            vintage_dates = (
+                dates_payload.get("vintage_dates") if isinstance(dates_payload, dict) else None
+            )
             if not isinstance(vintage_dates, list) or not vintage_dates:
                 raise SourceRequestError(
                     f"FRED/ALFRED returned no usable vintage dates for {entry.id}"
@@ -399,7 +409,7 @@ class FredExecutor:
                 raise SourceRequestError(
                     f"FRED returned invalid series metadata JSON for {entry.id}"
                 ) from exc
-            seriess = series_payload.get("seriess")
+            seriess = series_payload.get("seriess") if isinstance(series_payload, dict) else None
             if not isinstance(seriess, list) or not seriess or not isinstance(seriess[0], dict):
                 raise SourceRequestError(f"FRED returned no usable series metadata for {entry.id}")
             raise VintageHistoryAbsentError(
@@ -429,26 +439,33 @@ class FredExecutor:
         if end:
             params["coed"] = end
         response = self.requester.get(str(entry.endpoint.url), params=params, policy=FRED_POLICY)
-        text = response.content.decode("utf-8-sig")
-        reader = csv.DictReader(io.StringIO(text))
-        if not reader.fieldnames:
-            raise SourceRequestError(f"FRED returned an empty CSV for {entry.id}")
+        try:
+            source_rows = delimited_bytes_to_rows(response.content)
+            reader = csv.reader(io.StringIO(response.content.decode("utf-8-sig")))
+            fieldnames = next(reader)
+        except (ValueError, csv.Error) as exc:
+            raise SourceRequestError(f"FRED returned malformed CSV for {entry.id}: {exc}") from None
         date_field = next(
             (
                 field
-                for field in reader.fieldnames
+                for field in fieldnames
                 if field.casefold() in {"date", "observation_date"}
             ),
-            reader.fieldnames[0],
-        )
-        value_field = next(
-            (field for field in reader.fieldnames if field != date_field),
             None,
         )
-        if value_field is None:
-            raise SourceRequestError(f"FRED CSV omitted a value column for {entry.id}")
+        value_field = next(
+            (
+                field for field in fieldnames
+                if field.casefold() == str(entry.endpoint.series_id).casefold()
+            ),
+            None,
+        )
+        if date_field is None or value_field is None:
+            raise SourceRequestError(
+                f"FRED CSV omitted the requested date/value columns for {entry.id}"
+            )
         rows = [
-            {"date": row.get(date_field, ""), "value": row.get(value_field, "")} for row in reader
+            {"date": row[date_field], "value": row[value_field]} for row in source_rows
         ]
         return FetchResult(
             rows=rows,
@@ -641,5 +658,5 @@ def _alfred_response_metadata(payload: dict[str, Any]) -> dict[str, Any]:
             "offset",
             "limit",
         )
-        if payload.get(name) not in {None, ""}
+        if payload.get(name) is not None and payload.get(name) != ""
     }

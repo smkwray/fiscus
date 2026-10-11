@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -80,6 +80,7 @@ BEA_NIPA_TABLE_DATASET_ID = "bea_nipa_table"
 BEA_TABLE_ID = re.compile(r"^T[A-Z0-9]{5,6}$")
 BEA_FREQUENCIES = frozenset({"A", "Q", "M"})
 BEA_INVENTORY_FREQUENCY = re.compile(r"\(([AQM])\)")
+LATEST_CACHE_MAX_AGE_SECONDS = 24 * 60 * 60
 
 
 @dataclass(frozen=True)
@@ -277,16 +278,67 @@ class FiscusService:
                 end_date.year if end_date else datetime.now(UTC).year,
                 refresh=refresh,
             )
+            source_cache_hit = result["cache_hit"]
             artifact = self.cache.find_by_cache_key(result["artifact"]["cache_key"])
-            filtered = self._build_bea_nipa_response(
+            if start_date is not None or end_date is not None:
+                source_artifact = artifact
+                bounds = {
+                    "start": start_date.isoformat() if start_date else None,
+                    "end": end_date.isoformat() if end_date else None,
+                }
+                request_params = canonical_params({
+                    **source_artifact.manifest["params"],
+                    **bounds,
+                    "source_cache_key": source_artifact.descriptor.cache_key,
+                })
+                artifact = None if refresh else self.cache.load_latest(dataset_id, request_params)
+                if artifact is None:
+                    rows = _filter_rows_by_date(
+                        source_artifact.rows, start=start_date, end=end_date
+                    )
+                    source_manifest = source_artifact.manifest
+                    artifact = self.cache.store(
+                        dataset_id,
+                        request_params,
+                        source_manifest["vintage"],
+                        rows_to_csv_bytes(
+                            rows,
+                            preferred_fields=(
+                                source_artifact.rows[0]
+                                if source_artifact.rows
+                                else ("date", "TimePeriod")
+                            ),
+                        ),
+                        {
+                            **{
+                                name: source_manifest[name]
+                                for name in (
+                                    "source_url", "retrieved_at_utc", "source_request",
+                                    "source_metadata", "source_reported",
+                                )
+                                if name in source_manifest
+                            },
+                            "source_artifact": source_artifact.descriptor.as_dict(),
+                            "transform": {
+                                "operation": "inclusive_calendar_date_filter",
+                                "field": "date",
+                                **bounds,
+                                "values_changed": False,
+                            },
+                            "row_count": len(rows),
+                            "data_coverage": date_coverage(rows, ("date", "TimePeriod")),
+                            "observed_coverage": bea_nipa_coverage(rows, "T10106"),
+                        },
+                    )
+            result = self._build_bea_nipa_response(
                 "T10106",
                 "Q",
                 artifact,
                 observation_start=start_date,
                 observation_end=end_date,
             )
-            filtered["cache_hit"] = result["cache_hit"]
-            result = filtered
+            if start_date is None and end_date is None:
+                result["cache_hit"] = source_cache_hit
             result["deprecation"] = {
                 "status": "deprecated",
                 "remove_after": "one release",
@@ -337,13 +389,40 @@ class FiscusService:
                     if auth_env and os.environ.get(auth_env) and entry.endpoint.api_url
                     else "fred_graph_csv"
                 )
+            series_metadata = None
+            if "uncataloged" in entry.tags and request_params["source_mode"] == "fred_api_json":
+                # A current metadata fetch must not relabel observations cached
+                # under another unit reference year, seasonality, or frequency.
+                # Include the readable interpretation in the existing request
+                # identity; changed or unavailable metadata requires a new fetch.
+                series_metadata = {
+                    "units": entry.units.model_dump(mode="json"),
+                    "frequency": entry.frequency,
+                }
+                request_params["series_metadata"] = series_metadata
+
             def fetch() -> FetchResult:
-                return self.fred.fetch(
+                result = self.fred.fetch(
                     entry,
                     start=start_iso,
                     end=end_iso,
                     vintage_as_of=vintage_iso,
                 )
+                if series_metadata is not None:
+                    result = replace(
+                        result,
+                        source_metadata={
+                            **result.source_metadata,
+                            "series_interpretation": {
+                                **series_metadata,
+                                "basis": (
+                                    "Derived from FRED's current series metadata when available; "
+                                    "not independently vintage-verified."
+                                ),
+                            },
+                        },
+                    )
+                return result
 
         elif entry.access.executor == ExecutorKind.BLS:
             def fetch() -> FetchResult:
@@ -358,11 +437,29 @@ class FiscusService:
             end=end_date,
             params={"vintage_as_of": vintage_iso} if vintage_iso else {},
         )
-        response_entry = (
-            entry.model_copy(update={"caveats": [*entry.caveats, _ALFRED_SNAPSHOT_CAVEAT]})
-            if vintage_iso
-            else entry
-        )
+        response_entry = entry
+        if vintage_iso:
+            response_updates: dict[str, Any] = {
+                "caveats": [*entry.caveats, _ALFRED_SNAPSHOT_CAVEAT],
+            }
+            if "uncataloged" in entry.tags:
+                # Series metadata defaults to the current information set. Its
+                # units and annualization can change independently of the values
+                # requested from ALFRED, so do not carry current classifications
+                # into a historical snapshot as verified units.
+                response_updates["units"] = UnitSpec(
+                    label=(
+                        f"unknown for ALFRED as-of {vintage_iso} "
+                        f"(current series metadata: {entry.units.label})"
+                    ),
+                    annualized=None,
+                    unit_class="uncataloged_annualization_unknown",
+                )
+                response_updates["caveats"] = [
+                    caveat for caveat in response_updates["caveats"]
+                    if not caveat.id.startswith("fiscus.annualiz")
+                ] + [_ALFRED_UNVERIFIED_UNITS_CAVEAT]
+            response_entry = entry.model_copy(update=response_updates)
         return self._cached_fetch(
             response_entry,
             canonical_params(request_params),
@@ -399,6 +496,7 @@ class FiscusService:
         cached = None if refresh else self.cache.load_latest(
             BEA_NIPA_TABLE_DATASET_ID,
             request_params,
+            max_age_seconds=LATEST_CACHE_MAX_AGE_SECONDS,
         )
         if cached is None:
             if not os.environ.get("BEA_API_KEY"):
@@ -651,6 +749,11 @@ class FiscusService:
                 "data_coverage": response_date_coverage,
                 "source_request": manifest.get("source_request", {}),
                 "source_metadata": manifest.get("source_metadata", {}),
+                **{
+                    name: manifest[name]
+                    for name in ("source_artifact", "transform")
+                    if name in manifest
+                },
             },
             "artifact": artifact.descriptor.as_dict(),
             "cache_hit": artifact.cache_hit,
@@ -801,6 +904,7 @@ class FiscusService:
             request_params,
             refresh=refresh,
             caveat_context=context,
+            expected_vintage=loaded.vintage,
             fetch=lambda: FetchResult(
                 rows=rows,
                 source_url=loaded.package_source_url,
@@ -864,7 +968,13 @@ class FiscusService:
         request_params = canonical_params({"url": str(entry.endpoint.url)})
         context = CaveatContext()
         if not refresh:
-            cached = self.cache.load_latest(entry.id, request_params)
+            cached = self.cache.load_latest(
+                entry.id, request_params,
+                max_age_seconds=(
+                    None if entry.refresh.cadence.casefold().startswith("static")
+                    else LATEST_CACHE_MAX_AGE_SECONDS
+                ),
+            )
             if cached is not None:
                 return build_fetch_response(entry, cached, binding_caveats(entry, context))
         result, content, data_file = self.file.fetch(entry)
@@ -1184,9 +1294,23 @@ class FiscusService:
         refresh: bool,
         caveat_context: CaveatContext,
         fetch: Callable[[], FetchResult],
+        expected_vintage: str | None = None,
     ) -> dict[str, Any]:
         if not refresh:
-            cached = self.cache.load_latest(entry.id, request_params)
+            immutable_request = (
+                expected_vintage is not None
+                or "vintage_as_of" in request_params
+                or "asof" in request_params
+            )
+            cached = self.cache.load_latest(
+                entry.id, request_params,
+                max_age_seconds=None if immutable_request else LATEST_CACHE_MAX_AGE_SECONDS,
+            )
+            if (
+                cached is not None and expected_vintage is not None
+                and cached.manifest["vintage"] != expected_vintage
+            ):
+                cached = None
             if cached is not None:
                 return build_fetch_response(
                     entry,
@@ -1260,6 +1384,17 @@ _ALFRED_SNAPSHOT_CAVEAT = Caveat(
         "This artifact is an ALFRED information snapshot as of the requested closed past "
         "date. It is not proof of the exact source-origin file or publication instant; "
         "ALFRED availability can follow the source release and may use fallback evidence."
+    ),
+)
+
+_ALFRED_UNVERIFIED_UNITS_CAVEAT = Caveat(
+    id="fred.alfred_units_not_vintage_verified",
+    severity=Severity.CRITICAL,
+    message=(
+        "The uncataloged series metadata describes the current FRED information set, "
+        "not verified units for this ALFRED vintage. Historical units, reference bases, "
+        "seasonal adjustment, and annualization may differ. Verify the vintage's source "
+        "metadata before combining values across vintages or applying unit conversions."
     ),
 )
 

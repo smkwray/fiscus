@@ -80,6 +80,67 @@ def test_fiscaldata_refuses_silent_page_truncation(tmp_path: Path) -> None:
     client.close()
 
 
+def test_mspd_amount_scale_and_provider_field_metadata_are_preserved(tmp_path: Path) -> None:
+    # The official MSPD endpoint labels these amounts "(in Millions)".
+    metadata = {
+        "labels": {"outstanding_amt": "Outstanding Amount (in Millions)"},
+        "dataTypes": {"outstanding_amt": "CURRENCY0"},
+        "dataFormats": {"outstanding_amt": "$1,000,000"},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "data": [{"record_date": "2026-09-30", "outstanding_amt": "334135.4294"}],
+                "meta": {"total-pages": 1, **metadata},
+            },
+            request=request,
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handler)) as client,
+        FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service,
+    ):
+        result = service.fiscaldata_query("fiscaldata.mspd_table_3_market")
+        assert "millions of U.S. dollars" in result["dataset"]["units"]["label"]
+        assert result["preview"]["head"][0]["outstanding_amt"] == "334135.4294"
+        assert result["provenance"]["source_metadata"]["field_metadata"] == metadata
+        assert "fiscaldata.mspd_table_3.millions" in {c["id"] for c in result["caveats"]}
+        stored = service.provenance(result["artifact"]["cache_key"])
+        assert stored["manifest"]["source_metadata"]["field_metadata"] == metadata
+
+
+@pytest.mark.parametrize(
+    ("fields", "explicit_sort", "expected_sort"),
+    [
+        ("record_date,close_today_bal", None, "record_date"),
+        ("close_today_bal", None, None),
+        ("close_today_bal", "-close_today_bal", "-close_today_bal"),
+    ],
+)
+def test_fiscaldata_projection_adapts_only_default_sort(
+    tmp_path: Path, fields: str, explicit_sort: str | None, expected_sort: str | None
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["fields"] == fields
+        assert request.url.params.get("sort") == expected_sort
+        return httpx.Response(
+            200,
+            json={"data": [{"close_today_bal": "1"}], "meta": {"total-pages": 1}},
+            request=request,
+        )
+
+    params = {"fields": fields}
+    if explicit_sort is not None:
+        params["sort"] = explicit_sort
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service:
+        result = service.fiscaldata_query("fiscaldata.dts_operating_cash_balance", params=params)
+    assert result["preview"]["row_count"] == 1
+    client.close()
+
+
 def test_fiscaldata_refuses_unknown_total_with_next_link(tmp_path: Path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         payload = {

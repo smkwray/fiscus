@@ -423,6 +423,351 @@
             "properties": {
               "access": {
                 "properties": {
+                  "executor": {
+                    "const": "z1"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "endpoint": {
+                      "properties": {
+                        "series_id": {
+                          "pattern": "^\\s*(?:[bB][oO][gG][zZ]1)?(?:[Ff][Aa])"
+                        }
+                      }
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "semantics": {
+                      "properties": {
+                        "kind": {
+                          "const": "FA"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "endpoint": {
+                      "properties": {
+                        "series_id": {
+                          "pattern": "^\\s*(?:[bB][oO][gG][zZ]1)?(?:[Ff][Cc])"
+                        }
+                      }
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "semantics": {
+                      "properties": {
+                        "kind": {
+                          "const": "FC"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "endpoint": {
+                      "properties": {
+                        "series_id": {
+                          "pattern": "^\\s*(?:[bB][oO][gG][zZ]1)?(?:[Ff][Gg])"
+                        }
+                      }
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "semantics": {
+                      "properties": {
+                        "kind": {
+                          "const": "FG"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "endpoint": {
+                      "properties": {
+                        "series_id": {
+                          "pattern": "^\\s*(?:[bB][oO][gG][zZ]1)?(?:[Ff][Ii])"
+                        }
+                      }
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "semantics": {
+                      "properties": {
+                        "kind": {
+                          "const": "FI"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "endpoint": {
+                      "properties": {
+                        "series_id": {
+                          "pattern": "^\\s*(?:[bB][oO][gG][zZ]1)?(?:[Ff][Ll])"
+                        }
+                      }
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "semantics": {
+                      "properties": {
+                        "kind": {
+                          "const": "FL"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "endpoint": {
+                      "properties": {
+                        "series_id": {
+                          "pattern": "^\\s*(?:[bB][oO][gG][zZ]1)?(?:[Ff][Rr])"
+                        }
+                      }
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "semantics": {
+                      "properties": {
+                        "kind": {
+                          "const": "FR"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "endpoint": {
+                      "properties": {
+                        "series_id": {
+                          "pattern": "^\\s*(?:[bB][oO][gG][zZ]1)?(?:[Ff][Ss])"
+                        }
+                      }
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "semantics": {
+                      "properties": {
+                        "kind": {
+                          "const": "FS"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "endpoint": {
+                      "properties": {
+                        "series_id": {
+                          "pattern": "^\\s*(?:[bB][oO][gG][zZ]1)?(?:[Ff][Uu])"
+                        }
+                      }
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "semantics": {
+                      "properties": {
+                        "kind": {
+                          "const": "FU"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "endpoint": {
+                      "properties": {
+                        "series_id": {
+                          "pattern": "^\\s*(?:[bB][oO][gG][zZ]1)?(?:[Ff][Vv])"
+                        }
+                      }
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "semantics": {
+                      "properties": {
+                        "kind": {
+                          "const": "FV"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "endpoint": {
+                      "properties": {
+                        "series_id": {
+                          "pattern": "^\\s*(?:[bB][oO][gG][zZ]1)?(?:[Ll][Aa])"
+                        }
+                      }
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "semantics": {
+                      "properties": {
+                        "kind": {
+                          "const": "LA"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "endpoint": {
+                      "properties": {
+                        "series_id": {
+                          "pattern": "^\\s*(?:[bB][oO][gG][zZ]1)?(?:[Ll][Mm])"
+                        }
+                      }
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "semantics": {
+                      "properties": {
+                        "kind": {
+                          "const": "LM"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "endpoint": {
+                      "properties": {
+                        "series_id": {
+                          "pattern": "^\\s*(?:[bB][oO][gG][zZ]1)?(?:[Pp][Cc])"
+                        }
+                      }
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "semantics": {
+                      "properties": {
+                        "kind": {
+                          "const": "PC"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ],
+            "properties": {
+              "endpoint": {
+                "properties": {
+                  "series_id": {
+                    "pattern": "^\\s*(?:[bB][oO][gG][zZ]1)?(?:[Ff][Aa]|[Ff][Cc]|[Ff][Gg]|[Ff][Ii]|[Ff][Ll]|[Ff][Rr]|[Ff][Ss]|[Ff][Uu]|[Ff][Vv]|[Ll][Aa]|[Ll][Mm]|[Pp][Cc])",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "series_id"
+                ]
+              },
+              "semantics": {
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "FA",
+                      "FC",
+                      "FG",
+                      "FI",
+                      "FL",
+                      "FR",
+                      "FS",
+                      "FU",
+                      "FV",
+                      "LA",
+                      "LM",
+                      "PC"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              }
+            },
+            "required": [
+              "endpoint",
+              "semantics"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "access": {
+                "properties": {
                   "mode": {
                     "const": "browser_download_only"
                   }

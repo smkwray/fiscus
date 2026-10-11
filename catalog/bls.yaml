@@ -75,11 +75,11 @@ entries:
       notes: 1939M01 verified via the API (value 25935).
     frequency: monthly
     units:
-      label: Thousands of persons, seasonally adjusted
+      label: Thousands of payroll jobs, seasonally adjusted
       scale: thousands
       seasonal_adjustment: seasonally adjusted
       annualized: false
-      unit_class: persons_thousands
+      unit_class: jobs_thousands
     endpoint:
       url: https://api.bls.gov/publicAPI/v2/timeseries/data/
       series_id: CES0500000001
@@ -105,7 +105,7 @@ entries:
     semantics:
       granularity: national monthly level
       basis: CES establishment survey
-      notes: Levels are in thousands; convert before combining with person-count series.
+      notes: Levels are in thousands of payroll jobs; rescaling does not make them counts of employed people.
     tools: [get_series]
     caveats:
       - id: bls.year_window_limit
@@ -114,6 +114,9 @@ entries:
       - id: bls.ces_benchmark_revisions
         severity: warning
         message: CES levels are benchmarked annually to unemployment-insurance records; preliminary months revise twice and benchmark revisions can move levels by hundreds of thousands.
+      - id: bls.ces_jobs_not_people
+        severity: critical
+        message: "CES counts payroll jobs: a person holding jobs at multiple establishments can be counted more than once. CPS counts employed people once. Do not substitute or combine these counts as equivalent concepts. Source: https://www.bls.gov/web/empsit/ces_cps_trends.htm"
 
   - id: bls.cpi_relative_importance
     family: bls

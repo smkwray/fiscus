@@ -52,6 +52,16 @@ def test_cli_prints_stable_error_code(capsys, tmp_path: Path) -> None:
     assert "fiscus [catalog_absent]:" in capsys.readouterr().err
 
 
+def test_cli_mcp_honors_data_directory(tmp_path: Path, monkeypatch) -> None:
+    from fiscus import mcp_server
+
+    observed = []
+    monkeypatch.setattr(mcp_server, "main", lambda **kwargs: observed.append(kwargs) or 0)
+
+    assert main(["--data-dir", str(tmp_path), "mcp"]) == 0
+    assert observed == [{"data_dir": str(tmp_path)}]
+
+
 def test_cache_export_cli_writes_caller_owned_file(capsys, tmp_path: Path) -> None:
     payload = b"date,value\n2026-01-01,1\n"
     with CacheManager(tmp_path / "data") as cache:

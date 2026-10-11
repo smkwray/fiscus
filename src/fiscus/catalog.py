@@ -12,7 +12,14 @@ import yaml
 from pydantic import ValidationError
 
 from fiscus.errors import CatalogError, DatasetNotFoundError
-from fiscus.models import EXECUTOR_TOOLS, AccessMode, CatalogEntry, CatalogFile, ExecutorKind
+from fiscus.models import (
+    EXECUTOR_TOOLS,
+    Z1_KIND_CODES,
+    AccessMode,
+    CatalogEntry,
+    CatalogFile,
+    ExecutorKind,
+)
 
 CATALOG_SCHEMA_VERSION = 1
 FAMILY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
@@ -164,6 +171,50 @@ def catalog_schema_json() -> str:
         {
             "if": {
                 "properties": {
+                    "access": {"properties": {"executor": {"const": "z1"}}}
+                },
+            },
+            "then": {
+                "required": ["endpoint", "semantics"],
+                "properties": {
+                    "endpoint": {
+                        "required": ["series_id"],
+                        "properties": {
+                            "series_id": {
+                                "type": "string",
+                                "pattern": _z1_prefix_pattern(Z1_KIND_CODES),
+                            }
+                        },
+                    },
+                    "semantics": {
+                        "required": ["kind"],
+                        "properties": {"kind": {"enum": list(Z1_KIND_CODES)}},
+                    },
+                },
+                "allOf": [
+                    {
+                        "if": {
+                            "properties": {
+                                "endpoint": {
+                                    "properties": {
+                                        "series_id": {"pattern": _z1_prefix_pattern([kind])}
+                                    }
+                                }
+                            }
+                        },
+                        "then": {
+                            "properties": {
+                                "semantics": {"properties": {"kind": {"const": kind}}}
+                            }
+                        },
+                    }
+                    for kind in Z1_KIND_CODES
+                ],
+            },
+        },
+        {
+            "if": {
+                "properties": {
                     "access": {
                         "properties": {
                             "mode": {"const": AccessMode.BROWSER_DOWNLOAD_ONLY.value}
@@ -185,6 +236,11 @@ def catalog_schema_json() -> str:
         },
     ]
     return json.dumps(schema, indent=2, sort_keys=True) + "\n"
+
+
+def _z1_prefix_pattern(kinds: Iterable[str]) -> str:
+    prefixes = "|".join("".join(f"[{char}{char.lower()}]" for char in kind) for kind in kinds)
+    return rf"^\s*(?:[bB][oO][gG][zZ]1)?(?:{prefixes})"
 
 
 def _bundled_documents() -> list[tuple[str, str]]:

@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v9.0.0
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: "3.11"
           enable-cache: true
@@ -35,7 +35,7 @@ jobs:
           title="Weekly live source smoke failed"
           body_file="live-smoke-issue.md"
           {
-            echo "The scheduled FRED/FiscalData source smoke failed."
+            echo "The scheduled economic-data source smoke failed."
             echo
             echo "Workflow: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             echo

@@ -95,3 +95,28 @@ def test_local_file_missing_path_is_explicit(tmp_path: Path) -> None:
         pytest.raises(SourceRequestError, match="does not exist"),
     ):
         service.get_file("local.tdc_estimates")
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"date,tdc\n2025-12-31,\xff\n",
+        b"date,tdc,tdc\n2025-12-31,1,2\n",
+        b"date,\n2025-12-31,1\n",
+        b"date,wrong_value\n2025-12-31,1\n",
+        b"date,tdc\n2025-12-31,1,2\n",
+        b"date,tdc\n2025-12-31\n",
+        b'date,tdc\n2025-12-31,"unterminated\n',
+    ],
+)
+def test_local_file_rejects_lossy_or_malformed_tabular_data(
+    tmp_path: Path, content: bytes,
+) -> None:
+    artifact = tmp_path / "estimates.csv"
+    artifact.write_bytes(content)
+    catalog = Catalog.load(extra_paths=[_overlay(tmp_path, artifact)])
+    with (
+        FiscusService(catalog=catalog, data_dir=tmp_path / "cache") as service,
+        pytest.raises(SourceRequestError),
+    ):
+        service.get_file("local.tdc_estimates")

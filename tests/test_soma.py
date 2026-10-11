@@ -4,7 +4,9 @@ import json
 from pathlib import Path
 
 import httpx
+import pytest
 
+from fiscus.errors import SourceRequestError
 from fiscus.service import FiscusService
 
 ASOF_PAYLOAD = {"soma": {"asOfDates": ["2026-07-08", "2026-07-01", "2026-06-24"]}}
@@ -78,4 +80,32 @@ def test_soma_cusip_filter_and_explicit_asof(tmp_path: Path) -> None:
     assert result["preview"]["head"][0]["cusip"] == "912797RF6".replace("RF6", "RF6")
     assert result["provenance"]["source_metadata"]["cusip_filter"] == "912797RF6"
     assert {item["id"] for item in result["caveats"]} >= {"soma.weekly_snapshot"}
+    client.close()
+
+
+def test_soma_refuses_mismatched_snapshot_dates(tmp_path: Path) -> None:
+    payload = json.loads(json.dumps(HOLDINGS_PAYLOAD))
+    payload["soma"]["holdings"][0]["asOfDate"] = "2026-07-01"
+    client = httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json=payload, request=request)
+    ))
+    with (
+        FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service,
+        pytest.raises(SourceRequestError, match="holding dates differ"),
+    ):
+        service.soma_holdings(asof="2026-07-08")
+    client.close()
+
+
+def test_soma_latest_refuses_malformed_asof_dates(tmp_path: Path) -> None:
+    client = httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(
+            200, json={"soma": {"asOfDates": ["2026-07-08", "20260715"]}}, request=request
+        )
+    ))
+    with (
+        FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service,
+        pytest.raises(SourceRequestError, match="malformed date"),
+    ):
+        service.soma_holdings()
     client.close()

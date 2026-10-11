@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import csv
 import hashlib
-import io
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from fiscus.errors import SourceRequestError
+from fiscus.csvutil import delimited_bytes_to_rows
+from fiscus.errors import SourceRequestError, SourceSchemaChangedError
 from fiscus.models import CatalogEntry, ResponseFormat
 
 
@@ -27,21 +28,29 @@ class LocalFileExecutor:
             raise SourceRequestError(
                 f"{entry.id} points at a local file that does not exist: {path}"
             )
-        data = path.read_bytes()
-        stat = path.stat()
+        try:
+            with path.open("rb") as source:
+                before = os.fstat(source.fileno())
+                data = source.read()
+                stat = os.fstat(source.fileno())
+        except OSError as exc:
+            raise SourceRequestError(f"{entry.id} local file could not be read: {path}") from exc
+        if (before.st_size, before.st_mtime_ns) != (stat.st_size, stat.st_mtime_ns):
+            raise SourceRequestError(f"{entry.id} local file changed while being read")
         modified = datetime.fromtimestamp(stat.st_mtime, tz=UTC)
         rows: list[dict[str, str]] = []
         if entry.response.format in {ResponseFormat.CSV, ResponseFormat.TSV}:
             delimiter = "," if entry.response.format == ResponseFormat.CSV else "\t"
-            reader = csv.DictReader(
-                io.StringIO(data.decode("utf-8-sig", "replace")), delimiter=delimiter
-            )
-            if not reader.fieldnames:
-                raise SourceRequestError(f"{entry.id} local file has no header row")
-            rows = [
-                {str(key): "" if value is None else str(value) for key, value in row.items()}
-                for row in reader
-            ]
+            try:
+                rows = delimited_bytes_to_rows(
+                    data,
+                    delimiter=delimiter,
+                    required_fields=[*entry.response.date_fields, *entry.response.value_fields],
+                )
+            except (ValueError, csv.Error) as exc:
+                raise SourceSchemaChangedError(
+                    f"{entry.id} local file is not valid UTF-8 delimited data"
+                ) from exc
         return {
             "path": path,
             "rows": rows,

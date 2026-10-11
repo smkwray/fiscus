@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import threading
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -81,6 +82,36 @@ def test_latest_pointer_tracks_newest_store_and_cache_hit_flag(tmp_path: Path) -
             "byte_count": len(_csv(2)),
         }
         assert cache.load_latest("fred.missing", {}) is None
+
+
+@pytest.mark.parametrize("updated_at", ["2024-01-01T00:00:00+00:00", "invalid", "2024-01-01"])
+def test_latest_age_limit_bypasses_stale_or_unverifiable_pointer(
+    tmp_path: Path, updated_at: str,
+) -> None:
+    with CacheManager(tmp_path) as cache:
+        stored = cache.store("fred.a", {}, "release:1", _csv(1), _MANIFEST)
+        cache._connect().execute("UPDATE latest SET updated_at = ?", (updated_at,))
+        assert cache.load_latest("fred.a", {}, max_age_seconds=86_400) is None
+        assert cache.find_by_cache_key(stored.descriptor.cache_key).rows[0]["value"] == "1"
+        assert cache.load_latest("fred.a", {}) is not None
+        # Revalidation may return identical bytes: its pointer age is still renewed.
+        cache.store("fred.a", {}, "release:1", _csv(1), _MANIFEST)
+        assert cache.load_latest("fred.a", {}, max_age_seconds=86_400) is not None
+
+
+def test_latest_pointer_future_timestamp_and_wrong_artifact_fail_closed(tmp_path: Path) -> None:
+    with CacheManager(tmp_path) as cache:
+        cache.store("fred.a", {}, "release:1", _csv(1), _MANIFEST)
+        future = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+        cache._connect().execute("UPDATE latest SET updated_at = ?", (future,))
+        assert cache.load_latest("fred.a", {}, max_age_seconds=86_400) is None
+        second = cache.store("fred.b", {}, "release:1", _csv(2), _MANIFEST)
+        cache._connect().execute(
+            "UPDATE latest SET cache_key = ? WHERE dataset_id = ?",
+            (second.descriptor.cache_key, "fred.a"),
+        )
+        with pytest.raises(CacheError, match="latest pointer disagrees"):
+            cache.load_latest("fred.a", {})
 
 
 def test_binary_payload_read_bytes_and_non_csv_guard(tmp_path: Path) -> None:
@@ -234,6 +265,54 @@ def test_export_writes_a_caller_owned_file(tmp_path: Path) -> None:
         assert destination.parent != cache.root
 
 
+@pytest.mark.parametrize("destination_kind", ["database", "inside-cache", "hardlink"])
+def test_export_cannot_overwrite_cache_storage(tmp_path: Path, destination_kind: str) -> None:
+    with CacheManager(tmp_path) as cache:
+        artifact = cache.store("fred.a", {}, "release:1", _csv(7), _MANIFEST)
+        if destination_kind == "database":
+            destination = cache.db_path
+        elif destination_kind == "inside-cache":
+            destination = cache.root / "data.csv"
+        else:
+            destination = tmp_path / "linked.sqlite3"
+            destination.hardlink_to(cache.db_path)
+        with pytest.raises(CacheError, match="outside the cache"):
+            cache.export(artifact.descriptor.cache_key, destination)
+        assert cache.read_bytes(artifact.descriptor.cache_key) == _csv(7)
+
+
+@pytest.mark.parametrize("field", ["cache_key", "dataset_id", "params", "vintage", "sha256"])
+@pytest.mark.parametrize("damage", ["missing", "mismatch"])
+def test_corrupt_manifest_identity_fails_closed(
+    tmp_path: Path, field: str, damage: str,
+) -> None:
+    with CacheManager(tmp_path) as cache:
+        stored = cache.store("fred.a", {"start": "2024"}, "release:1", _csv(7), _MANIFEST)
+        manifest = dict(stored.manifest)
+        if damage == "missing":
+            del manifest[field]
+        else:
+            manifest[field] = {} if field == "params" else "incorrect"
+        cache._connect().execute(
+            "UPDATE artifacts SET manifest_json = ? WHERE cache_key = ?",
+            (json.dumps(manifest), stored.descriptor.cache_key),
+        )
+        with pytest.raises(CacheError, match=f"stored {field}"):
+            cache.find_by_cache_key(stored.descriptor.cache_key)
+
+
+def test_database_identity_cannot_be_relabelled_without_changing_key(tmp_path: Path) -> None:
+    with CacheManager(tmp_path) as cache:
+        stored = cache.store("fred.a", {}, "release:1", _csv(7), _MANIFEST)
+        manifest = {**stored.manifest, "dataset_id": "fred.b"}
+        cache._connect().execute(
+            "UPDATE artifacts SET dataset_id = ?, manifest_json = ? WHERE cache_key = ?",
+            ("fred.b", json.dumps(manifest), stored.descriptor.cache_key),
+        )
+        with pytest.raises(CacheError, match="identity does not match"):
+            cache.read_bytes(stored.descriptor.cache_key)
+
+
 def _write_v1_artifact(request_dir: Path, vintage_slug: str, vintage: str, data: bytes) -> None:
     artifact_dir = request_dir / (
         f"{vintage_slug}--{hashlib.sha256(vintage.encode()).hexdigest()[:8]}"
@@ -303,6 +382,7 @@ def test_migrate_v1_preserves_pointer_diagnoses_corruption_and_writes_no_forest(
         ]
         latest = cache.load_latest("fred.legacy", {})
         assert latest is not None
+        assert cache.load_latest("fred.legacy", {}, max_age_seconds=86_400) is None
         assert latest.manifest["vintage"] == "release:1"
         assert cache.read_bytes(latest.descriptor.cache_key) == _csv(1)
         assert cache.load_latest("fred.bad", {}) is None
@@ -311,3 +391,39 @@ def test_migrate_v1_preserves_pointer_diagnoses_corruption_and_writes_no_forest(
     assert legacy_snapshot == {
         path.relative_to(legacy): path.read_bytes() for path in legacy.rglob("*") if path.is_file()
     }
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement", "reason"),
+    [
+        ("sha256", None, "valid sha256"),
+        ("sha256", "not-a-digest", "valid sha256"),
+        ("byte_count", None, "valid byte_count"),
+        ("byte_count", True, "valid byte_count"),
+    ],
+)
+def test_v1_migration_rejects_missing_or_invalid_integrity_evidence(
+    tmp_path: Path, field: str, replacement: object, reason: str,
+) -> None:
+    request = tmp_path / "cache" / "v1" / "datasets" / "fred.legacy" / ("a" * 24)
+    _write_v1_artifact(request, "release-1", "release:1", _csv(1))
+    manifest_path = next(request.glob("*/manifest.json"))
+    manifest = json.loads(manifest_path.read_text())
+    if replacement is None:
+        del manifest[field]
+    else:
+        manifest[field] = replacement
+    manifest_path.write_text(json.dumps(manifest))
+    with CacheManager(tmp_path) as cache:
+        report = cache.migrate_v1()
+        assert report["migrated"] == 0
+        assert report["skipped"] == 1
+        assert reason in report["diagnostics"][0]["reason"]
+
+
+def test_malformed_tabular_cache_artifact_has_typed_failure(tmp_path: Path) -> None:
+    with (
+        CacheManager(tmp_path) as cache,
+        pytest.raises(CacheError, match="invalid tabular data"),
+    ):
+        cache.store("fred.a", {}, "release:1", b"date,value\n2024-01-01,1,2\n", _MANIFEST)

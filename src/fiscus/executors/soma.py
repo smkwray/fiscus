@@ -22,10 +22,22 @@ class SomaExecutor:
             payload = response.json()
         except ValueError as exc:
             raise SourceRequestError("SOMA as-of date list returned invalid JSON") from exc
-        dates = payload.get("soma", {}).get("asOfDates")
+        soma = payload.get("soma") if isinstance(payload, dict) else None
+        dates = soma.get("asOfDates") if isinstance(soma, dict) else None
         if not isinstance(dates, list) or not dates:
             raise SourceRequestError("SOMA as-of date list is empty or malformed")
-        return max(str(value) for value in dates)
+        try:
+            if any(not isinstance(value, str) for value in dates):
+                raise ValueError("as-of date is not a string")
+            parsed = [date.fromisoformat(value) for value in dates]
+            if any(
+                value != observed.isoformat()
+                for value, observed in zip(dates, parsed, strict=True)
+            ):
+                raise ValueError("as-of date is not an ISO calendar date")
+        except ValueError as exc:
+            raise SourceRequestError("SOMA as-of date list contains a malformed date") from exc
+        return max(parsed).isoformat()
 
     def fetch(
         self,
@@ -42,13 +54,17 @@ class SomaExecutor:
             payload = response.json()
         except ValueError as exc:
             raise SourceRequestError(f"SOMA returned invalid JSON for as-of {asof}") from exc
-        holdings = payload.get("soma", {}).get("holdings")
+        soma = payload.get("soma") if isinstance(payload, dict) else None
+        holdings = soma.get("holdings") if isinstance(soma, dict) else None
         if not isinstance(holdings, list):
             raise SourceRequestError(f"SOMA response omitted holdings for as-of {asof}")
+        if any(not isinstance(holding, dict) for holding in holdings):
+            raise SourceRequestError(f"SOMA returned a malformed holding for as-of {asof}")
+        if any(holding.get("asOfDate") != asof for holding in holdings):
+            raise SourceRequestError(f"SOMA holding dates differ from requested as-of {asof}")
         rows = [
             {str(key): "" if value is None else str(value) for key, value in holding.items()}
             for holding in holdings
-            if isinstance(holding, dict)
         ]
         if cusip:
             wanted = cusip.strip().casefold()

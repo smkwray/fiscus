@@ -330,6 +330,12 @@ class CatalogEntry(StrictModel):
                 raise ValueError("keyed json_api entries must declare endpoint.api_key_param")
         if self.access.executor == ExecutorKind.BLS and not self.endpoint.series_id:
             raise ValueError("BLS entries require endpoint.series_id")
+        if self.access.executor == ExecutorKind.Z1:
+            if not self.endpoint.series_id:
+                raise ValueError("Z.1 entries require endpoint.series_id")
+            prefix = self.endpoint.series_id.strip().upper().removeprefix("BOGZ1")[:2]
+            if self.semantics.kind != prefix:
+                raise ValueError("Z.1 semantics.kind must match the endpoint.series_id prefix")
         if self.access.executor in {ExecutorKind.FILE, ExecutorKind.LOCAL_FILE} and (
             self.response.format
             not in {ResponseFormat.CSV, ResponseFormat.TSV, ResponseFormat.BINARY}

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
 import pytest
 
 from fiscus.catalog import Catalog
-from fiscus.errors import BrowserDownloadOnlyError
+from fiscus.errors import BrowserDownloadOnlyError, InvalidRequestError, SourceRequestError
 from fiscus.executors.bls import _period_end_date, _request_windows
 from fiscus.models import CatalogEntry
 from fiscus.service import FiscusService
@@ -58,10 +59,82 @@ def test_bls_month_end_handles_gregorian_leap_years() -> None:
     assert _period_end_date("2100", "M02") == "2100-02-28"
 
 
+def test_bls_preserves_preliminary_footnotes_in_artifact_and_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("BLS_API_KEY", raising=False)
+    footnotes = [{"code": "P", "text": "Preliminary."}, {"code": "R", "text": "Revised."}]
+    payload = {
+        "status": "REQUEST_SUCCEEDED",
+        "Results": {"series": [{
+            "seriesID": "CES0500000003",
+            "data": [{
+                "year": "2026", "period": "M08", "periodName": "August",
+                "value": "36.12", "footnotes": footnotes,
+            }],
+        }]},
+    }
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=payload, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service:
+        first = service.get_series("bls.ces0500000003")
+        cached = service.get_series("bls.ces0500000003")
+        rows = list(service.iter_csv_rows(first["artifact"]["cache_key"]))
+
+    assert calls == 1
+    assert json.loads(first["preview"]["head"][0]["footnotes"]) == footnotes
+    assert json.loads(rows[0]["footnotes"]) == footnotes
+    assert cached["preview"] == first["preview"]
+    assert cached["cache_hit"] is True
+    client.close()
+
+
+def test_bls_rejects_wrong_series_in_successful_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("BLS_API_KEY", raising=False)
+    payload = json.loads(json.dumps(BLS_PAYLOAD))
+    payload["Results"]["series"][0]["seriesID"] = "CES0500000003"
+    client = httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json=payload, request=request)
+    ))
+    with (
+        FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service,
+        pytest.raises(SourceRequestError, match="different series"),
+    ):
+        service.get_series("bls.lns14000000")
+    client.close()
+
+
 def test_bls_end_before_catalog_history_still_forms_a_valid_window() -> None:
     entry = Catalog.load().get("bls.lns14000000")
 
     assert _request_windows(entry, None, "1900-01-31", keyed=False) == [(1900, 1900)]
+
+
+def test_bls_future_start_only_fails_before_http(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("BLS_API_KEY", raising=False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("invalid BLS year range must not reach the source")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    start = f"{datetime.now(UTC).year + 1}-01-01"
+    with (
+        FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service,
+        pytest.raises(InvalidRequestError, match="current UTC year") as captured,
+    ):
+        service.get_series("bls.lns14000000", start=start)
+    assert captured.value.code == "invalid_request"
+    client.close()
 
 
 def test_bls_end_only_request_chunks_history_and_excludes_annual_averages(
@@ -153,6 +226,26 @@ def test_file_executor_parses_csv_and_binary_passthrough(tmp_path: Path) -> None
     client.close()
 
 
+@pytest.mark.parametrize("content", [
+    b"baseline_date,value,value\n2026-01-01,1,2\n",
+    b"baseline_date,value\n2026-01-01,1,2\n",
+    b"<!doctype html>\n<html>Access denied</html>\n",
+    b"baseline_date,value\n2026-01-01,\xff\n",
+])
+def test_file_executor_rejects_lossy_or_wrong_tabular_representation(
+    tmp_path: Path, content: bytes
+) -> None:
+    client = httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, content=content, request=request)
+    ))
+    with (
+        FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service,
+        pytest.raises(SourceRequestError, match="malformed csv"),
+    ):
+        service.get_file("cbo.baselines_github")
+    client.close()
+
+
 def test_remote_tsv_preserves_representation_and_round_trips_rows(tmp_path: Path) -> None:
     base = Catalog.load().get("cbo.baselines_github").model_dump(mode="json")
     base["id"] = "cbo.remote_tsv_fixture"
@@ -216,6 +309,7 @@ def test_logical_release_file_identity_keeps_exact_bytes_and_content_revisions(
     base["id"] = "cbo.logical_release_fixture"
     base["title"] = "Logical release fixture"
     base["endpoint"]["url"] = "https://example.test/releases/table.csv"
+    base["response"]["date_fields"] = ["date"]
     base["response"]["vintage_strategy"] = "logical_release_plus_sha256"
     base["release"] = {
         "logical_id": "cbo.example.2026-07",

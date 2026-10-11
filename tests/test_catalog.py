@@ -45,8 +45,8 @@ def test_non_fred_vintage_support_describes_only_the_entry_surface() -> None:
 
 
 def test_package_version_is_unique_release_version() -> None:
-    assert __version__ == "0.4.0"
-    assert version("fiscus") == "0.4.0"
+    assert __version__ == "0.4.1"
+    assert version("fiscus") == "0.4.1"
 
 
 def test_cataloged_saar_flow_levels_always_explain_period_conversion() -> None:
@@ -234,3 +234,27 @@ entries:
     )
     with pytest.raises(CatalogError, match="fred_realtime_or_http"):
         Catalog.load(extra_paths=[overlay])
+
+
+def test_catalog_rejects_z1_metadata_that_contradicts_mnemonic() -> None:
+    entry = Catalog.load().get("z1.federal_checkable_deposits_level").model_dump(mode="json")
+    entry["semantics"]["kind"] = "FU"
+
+    with pytest.raises(ValidationError, match=r"semantics\.kind must match"):
+        CatalogEntry.model_validate(entry)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(
+            {"schema_version": 1, "family": "z1", "entries": [entry]},
+            json.loads(catalog_schema_json()),
+        )
+
+
+def test_interest_expense_uses_verified_source_classification_fields() -> None:
+    entry = Catalog.load().get("fiscaldata.interest_expense")
+    expected = ["expense_catg_desc", "expense_group_desc", "expense_type_desc"]
+
+    assert entry.endpoint.default_params["sort"].split(",") == ["record_date", *expected]
+    message = next(
+        caveat.message for caveat in entry.caveats if caveat.id.endswith("classification")
+    )
+    assert all(field in message for field in expected)

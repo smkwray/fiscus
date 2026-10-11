@@ -26,7 +26,11 @@ def _issue_reporting_instruction() -> str:
     )
 
 
-def create_server(service: FiscusService | None = None) -> Any:
+def create_server(
+    service: FiscusService | None = None,
+    *,
+    data_dir: str | Path | None = None,
+) -> Any:
     from mcp.server.fastmcp import FastMCP
     from mcp.server.fastmcp.exceptions import ToolError
     from mcp.types import CallToolResult, TextContent
@@ -56,7 +60,7 @@ def create_server(service: FiscusService | None = None) -> Any:
                     isError=True,
                 )
 
-    core = service or FiscusService()
+    core = service or FiscusService(data_dir=data_dir)
     owns_service = service is None
 
     @asynccontextmanager
@@ -257,6 +261,6 @@ def create_server(service: FiscusService | None = None) -> Any:
     return app
 
 
-def main() -> int:
-    create_server().run(transport="stdio")
+def main(*, data_dir: str | Path | None = None) -> int:
+    create_server(data_dir=data_dir).run(transport="stdio")
     return 0

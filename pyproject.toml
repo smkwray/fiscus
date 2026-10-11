@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fiscus"
-version = "0.4.0"
+version = "0.4.1"
 description = "US economic data MCP server with a curated catalog, provenance, and source caveats."
 readme = "README.md"
 requires-python = ">=3.11"

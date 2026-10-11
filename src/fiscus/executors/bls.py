@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 from datetime import UTC, datetime
 
-from fiscus.errors import MissingKeyError, SourceRequestError
+from fiscus.errors import InvalidRequestError, MissingKeyError, SourceRequestError
 from fiscus.executors.base import FetchResult
 from fiscus.http import (
     HttpRequester,
@@ -57,6 +58,11 @@ class BlsExecutor:
 
         url = f"{entry.endpoint.url}{entry.endpoint.series_id}"
         windows = _request_windows(entry, start, end, keyed=bool(api_key))
+        if not windows:
+            raise InvalidRequestError(
+                "BLS requested start year is later than the end year; when end is omitted, "
+                "it defaults to the current UTC year"
+            )
         observations = []
         responses = []
         for first_year, last_year in windows:
@@ -72,15 +78,27 @@ class BlsExecutor:
                 payload = response.json()
             except ValueError:
                 raise SourceRequestError(f"BLS returned invalid JSON for {entry.id}") from None
+            if not isinstance(payload, dict):
+                raise SourceRequestError(f"BLS returned a non-object response for {entry.id}")
             status = payload.get("status")
             if status != "REQUEST_SUCCEEDED":
                 messages = "; ".join(str(item) for item in payload.get("message", []))
+                if api_key:
+                    messages = messages.replace(api_key, "REDACTED")
                 raise SourceRequestError(
                     f"BLS request for {entry.id} failed: {status}: {messages}"
                 )
-            series_list = payload.get("Results", {}).get("series", [])
-            if not series_list or not isinstance(series_list, list):
+            results = payload.get("Results")
+            series_list = results.get("series") if isinstance(results, dict) else None
+            if (
+                not isinstance(series_list, list)
+                or len(series_list) != 1
+                or not isinstance(series_list[0], dict)
+            ):
                 raise SourceRequestError(f"BLS response omitted series data for {entry.id}")
+            returned_id = series_list[0].get("seriesID")
+            if returned_id is not None and returned_id != entry.endpoint.series_id:
+                raise SourceRequestError(f"BLS returned a different series for {entry.id}")
             page = series_list[0].get("data", [])
             if not isinstance(page, list):
                 raise SourceRequestError(
@@ -91,9 +109,14 @@ class BlsExecutor:
         rows = []
         for item in observations:
             if not isinstance(item, dict):
-                continue
+                raise SourceRequestError(f"BLS returned a malformed row for {entry.id}")
             year = str(item.get("year", ""))
             period = str(item.get("period", ""))
+            footnotes = item.get("footnotes", [])
+            if not isinstance(footnotes, list) or any(
+                not isinstance(note, dict) for note in footnotes
+            ):
+                raise SourceRequestError(f"BLS returned malformed footnotes for {entry.id}")
             rows.append(
                 {
                     "date": _period_end_date(year, period),
@@ -101,6 +124,7 @@ class BlsExecutor:
                     "year": year,
                     "period": period,
                     "period_name": str(item.get("periodName", "")),
+                    "footnotes": json.dumps(footnotes, ensure_ascii=False, separators=(",", ":")),
                 }
             )
         rows.sort(key=lambda row: (row["year"], row["period"]))

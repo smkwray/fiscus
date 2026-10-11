@@ -149,7 +149,7 @@ entries:
       notes: Machine-readable CUSIP-level detail begins in January 2001.
     frequency: monthly
     units:
-      label: Field-specific; monetary fields are U.S. dollars
+      label: Field-specific; monetary amounts are millions of U.S. dollars and rates are percent
       scale: field-specific
       seasonal_adjustment: not applicable
       annualized: false
@@ -194,6 +194,9 @@ entries:
       - id: fiscaldata.mspd_table_3.monthly_snapshot
         severity: warning
         message: Each record_date is a monthly stock snapshot. Changes between snapshots are not equivalent to auction issuance or transaction flows without reconciliation.
+      - id: fiscaldata.mspd_table_3.millions
+        severity: critical
+        message: "issued_amt, inflation_adj_amt, redeemed_amt, and outstanding_amt are in millions of U.S. dollars, as identified by the endpoint's meta.labels and meta.dataFormats. Multiply by 1,000,000 only when converting to dollars; rates remain percent. Source: https://fiscaldata.treasury.gov/datasets/monthly-statement-public-debt/"
       - id: fiscaldata.mspd3.classification_fields
         severity: critical
         message: "All rows carry security_type_desc = Marketable; the instrument class lives in security_class1_desc with values such as Bills Maturity Value, Notes, Bonds, Inflation-Protected Securities, Floating Rate Notes, and Federal Financing Bank. Filtering security_type_desc for an instrument name silently returns zero rows."
@@ -227,7 +230,7 @@ entries:
       url: https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v2/accounting/od/interest_expense
       default_params:
         format: json
-        sort: record_date,expense_category_desc,security_type_desc
+        sort: record_date,expense_catg_desc,expense_group_desc,expense_type_desc
         "page[size]": "100"
       allowed_params: [fields, filter, sort, "page[size]"]
     access:
@@ -259,7 +262,7 @@ entries:
         message: This dataset overlaps the Monthly Treasury Statement gross-interest concept. Do not add the two as independent expenses without an explicit reconciliation, or interest will be double-counted.
       - id: fiscaldata.interest_expense.classification
         severity: warning
-        message: The endpoint has no direct marketable-security flag. Infer scope from expense_category_desc, security_class_desc, and security_type_desc, and retain those labels.
+        message: The endpoint has no direct marketable-security flag. Infer scope from expense_catg_desc, expense_group_desc, and expense_type_desc, and retain those labels.
       - id: fiscaldata.interest_expense.accounting_basis
         severity: warning
         message: "Accounting treatment is not uniform across categories: public issues are generally modified accrual while most Government Account Series are cash basis."

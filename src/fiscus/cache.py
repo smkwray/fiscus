@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import hashlib
-import io
 import json
 import mimetypes
 import re
@@ -283,6 +282,7 @@ class CacheManager:
         dataset_id: str,
         cache_key: str,
         vintage: str,
+        updated_at: str | None = None,
     ) -> None:
         conn.execute(
             "INSERT INTO latest (request_key, dataset_id, cache_key, vintage, updated_at) "
@@ -290,7 +290,10 @@ class CacheManager:
             "ON CONFLICT(request_key) DO UPDATE SET "
             "cache_key = excluded.cache_key, vintage = excluded.vintage, "
             "updated_at = excluded.updated_at",
-            (request_key, dataset_id, cache_key, vintage, datetime.now(UTC).isoformat()),
+            (
+                request_key, dataset_id, cache_key, vintage,
+                updated_at or datetime.now(UTC).isoformat(),
+            ),
         )
 
     # -- reads -----------------------------------------------------------------
@@ -299,15 +302,33 @@ class CacheManager:
         self,
         dataset_id: str,
         params: dict[str, Any],
+        *,
+        max_age_seconds: float | None = None,
     ) -> CachedArtifact | None:
         request_key = _digest({"dataset": dataset_id, "params": params})
         conn = self._connect()
         pointer = conn.execute(
-            "SELECT cache_key FROM latest WHERE request_key = ?", (request_key,)
+            "SELECT cache_key, vintage, updated_at FROM latest WHERE request_key = ?",
+            (request_key,),
         ).fetchone()
         if pointer is None:
             return None
-        return self._load_by_key(str(pointer["cache_key"]), cache_hit=True)
+        if max_age_seconds is not None:
+            try:
+                updated = datetime.fromisoformat(str(pointer["updated_at"]))
+                age = (datetime.now(UTC) - updated).total_seconds()
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if age < 0 or age >= max_age_seconds:
+                return None
+        artifact = self._load_by_key(str(pointer["cache_key"]), cache_hit=True)
+        if (
+            artifact.manifest["dataset_id"] != dataset_id
+            or artifact.manifest["params"] != params
+            or artifact.manifest["vintage"] != pointer["vintage"]
+        ):
+            raise CacheError("cache latest pointer disagrees with its requested artifact identity")
+        return artifact
 
     def find_by_cache_key(self, cache_key: str) -> CachedArtifact:
         """Resolve an immutable artifact by its full cache key or a unique prefix."""
@@ -330,9 +351,7 @@ class CacheManager:
         delimiter = _tabular_delimiter(descriptor)
         if delimiter is None:
             raise CacheError(f"cache artifact is not CSV or TSV: {resolved}")
-        text = io.StringIO(data.decode("utf-8-sig"), newline="")
-        reader = csv.DictReader(text, delimiter=delimiter)
-        return (dict(row) for row in reader)
+        return iter(_read_tabular_rows(data, delimiter, resolved))
 
     def _resolve_key(self, cache_key: str) -> str:
         needle = _validate_key(cache_key)
@@ -351,7 +370,7 @@ class CacheManager:
         descriptor, manifest, data = self._read_record(cache_key)
         delimiter = _tabular_delimiter(descriptor)
         rows = (
-            delimited_bytes_to_rows(data, delimiter=delimiter)
+            _read_tabular_rows(data, delimiter, cache_key)
             if delimiter is not None
             else []
         )
@@ -367,7 +386,8 @@ class CacheManager:
     ) -> tuple[ArtifactDescriptor, dict[str, Any], bytes]:
         conn = self._connect()
         row = conn.execute(
-            "SELECT cache_key, sha256, byte_count, data_file, manifest_json, payload "
+            "SELECT cache_key, dataset_id, params_json, vintage, sha256, byte_count, "
+            "data_file, manifest_json, payload "
             "FROM artifacts WHERE cache_key = ?",
             (cache_key,),
         ).fetchone()
@@ -375,6 +395,7 @@ class CacheManager:
             raise CacheError(f"cache artifact is incomplete: {cache_key}")
         try:
             manifest = json.loads(str(row["manifest_json"]))
+            params = json.loads(str(row["params_json"]))
         except json.JSONDecodeError as error:
             raise CacheError(f"cache manifest is invalid: {cache_key}") from error
         if not isinstance(manifest, dict):
@@ -388,13 +409,20 @@ class CacheManager:
             raise CacheError(f"cache hash/length mismatch: {cache_key}")
         consistency = {
             "cache_key": str(row["cache_key"]),
+            "dataset_id": str(row["dataset_id"]),
+            "params": params,
+            "vintage": str(row["vintage"]),
             "sha256": expected_sha,
             "byte_count": expected_count,
             "data_file": str(row["data_file"]),
         }
         for field, expected in consistency.items():
-            if field in manifest and manifest[field] != expected:
+            if field not in manifest or manifest[field] != expected:
                 raise CacheError(f"cache manifest disagrees with stored {field}: {cache_key}")
+        if not isinstance(params, dict) or _digest(
+            {"dataset": row["dataset_id"], "params": params, "vintage": row["vintage"]}
+        ) != cache_key:
+            raise CacheError(f"cache identity does not match its key: {cache_key}")
 
         filename = str(row["data_file"])
         mime_type = _mime_type(filename, manifest)
@@ -418,6 +446,10 @@ class CacheManager:
         """
         data = self.read_bytes(cache_key)
         destination = Path(dest).expanduser()
+        if destination.resolve().is_relative_to(self.root.resolve()) or (
+            destination.exists() and destination.samefile(self.db_path)
+        ):
+            raise CacheError("artifact export destination must be outside the cache directory")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(data)
         return destination
@@ -524,7 +556,16 @@ class CacheManager:
         request_key = _digest({"dataset": dataset_id, "params": params})
         conn = self._connect()
         with self._write_transaction(conn):
-            self._set_latest(conn, request_key, dataset_id, full_key, chosen_vintage)
+            migrated = conn.execute(
+                "SELECT manifest_json FROM artifacts WHERE cache_key = ?", (full_key,)
+            ).fetchone()
+            manifest = json.loads(migrated["manifest_json"])
+            # Importing cached bytes is not a new source retrieval. Preserve their age.
+            retrieved_at = manifest.get("retrieved_at_utc")
+            self._set_latest(
+                conn, request_key, dataset_id, full_key, chosen_vintage,
+                updated_at=retrieved_at if isinstance(retrieved_at, str) else "unknown",
+            )
         return "preserved" if pointer_preserved else "fallback"
 
 
@@ -547,6 +588,13 @@ def canonical_params(params: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _read_tabular_rows(data: bytes, delimiter: str, cache_key: str) -> list[dict[str, str]]:
+    try:
+        return delimited_bytes_to_rows(data, delimiter=delimiter)
+    except (ValueError, csv.Error) as exc:
+        raise CacheError(f"cache artifact has invalid tabular data: {cache_key}") from exc
+
+
 def _read_v1_artifact(
     manifest_path: Path,
 ) -> tuple[
@@ -556,7 +604,7 @@ def _read_v1_artifact(
     """Read and verify one legacy artifact, returning a diagnostic on failure."""
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except OSError as error:
+    except (OSError, UnicodeError) as error:
         return None, f"manifest is unreadable: {error}"
     except json.JSONDecodeError as error:
         return None, f"manifest is invalid JSON: {error}"
@@ -581,9 +629,17 @@ def _read_v1_artifact(
         return None, f"payload is unreadable: {error}"
     recorded_sha = manifest.get("sha256")
     recorded_len = manifest.get("byte_count")
-    if isinstance(recorded_sha, str) and hashlib.sha256(data).hexdigest() != recorded_sha:
+    if (
+        not isinstance(recorded_sha, str)
+        or len(recorded_sha) != 64
+        or any(char not in _HEX for char in recorded_sha)
+    ):
+        return None, "manifest lacks a valid sha256"
+    if type(recorded_len) is not int or recorded_len < 0:
+        return None, "manifest lacks a valid byte_count"
+    if hashlib.sha256(data).hexdigest() != recorded_sha:
         return None, "sha256 mismatch"
-    if isinstance(recorded_len, int) and recorded_len != len(data):
+    if recorded_len != len(data):
         return None, "byte_count mismatch"
     base = {
         key: value

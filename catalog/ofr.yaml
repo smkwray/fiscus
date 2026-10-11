@@ -111,12 +111,12 @@ entries:
     semantics:
       granularity: aggregate across registered money market funds
       basis: reported investment holdings
-      notes: Direct Treasury holdings only; Treasury-collateralized repo is the separate repo series.
+      notes: Direct Treasury holdings only; total repo investments include other collateral and are not a Treasury-only series.
     tools: [get_series]
     caveats:
       - id: ofr.treasury_excludes_repo
         severity: critical
-        message: This series is direct Treasury-security holdings and excludes Treasury-backed repurchase agreements. Total money-fund Treasury exposure requires adding the repo series explicitly.
+        message: "This series is direct Treasury-security holdings and excludes repo. The total repo series combines collateral types and cannot be added as Treasury-only exposure. Treasury-collateral exposure requires separately identified collateral data and an explicit exposure definition. Source: https://www.financialresearch.gov/short-term-funding-monitor/files/methodologies/2020-04--Methodology-MMF.pdf"
       - id: ofr.full_series_revisions
         severity: warning
         message: OFR republishes the complete series with each monthly update; past observations can change. Pin the retrieval vintage when reproducibility matters.

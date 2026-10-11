@@ -131,6 +131,197 @@ def test_uncataloged_fred_passthrough_surfaces_saar(tmp_path: Path, monkeypatch)
     client.close()
 
 
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("units", "Billions of Chained 2017 Dollars"),
+        ("frequency", "Monthly"),
+        ("seasonal_adjustment", "Not Seasonally Adjusted"),
+    ],
+)
+def test_current_fred_cache_binds_units_seasonality_and_frequency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, replacement: str,
+) -> None:
+    monkeypatch.setenv("FRED_API_KEY", "k" * 32)
+    info = {
+        "id": "EXAMPLE",
+        "title": "Example real series",
+        "units": "Billions of Chained 2012 Dollars",
+        "frequency": "Quarterly",
+        "seasonal_adjustment": "Seasonally Adjusted Annual Rate",
+        "observation_start": "1947-01-01",
+    }
+    observation_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal observation_calls
+        if request.url.path == "/fred/series":
+            return httpx.Response(200, json={"seriess": [info]}, request=request)
+        assert request.url.path == "/fred/series/observations"
+        observation_calls += 1
+        return httpx.Response(
+            200,
+            json={"observations": [{"date": "2024-01-01", "value": str(observation_calls)}]},
+            headers={"etag": '"unchanged-observation-validator"'},
+            request=request,
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handler)) as client,
+        FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service,
+    ):
+        first = service.get_series("fred.example")
+        old_key = first["artifact"]["cache_key"]
+        old_bytes = service.read_bytes(old_key)
+        old_provenance = service.provenance(old_key)
+        info[field] = replacement
+        second = service.get_series("fred.example")
+        third = service.get_series("fred.example")
+        assert second["cache_hit"] is False
+        assert third["cache_hit"] is True
+        assert second["preview"]["head"][0]["value"] == "2"
+        assert first["artifact"]["cache_key"] != second["artifact"]["cache_key"]
+        assert third["artifact"] == second["artifact"]
+        assert first["dataset"]["units"]["label"] == "Billions of Chained 2012 Dollars"
+        assert first["dataset"]["frequency"] == "Quarterly"
+        assert service.provenance(old_key) == old_provenance
+        assert service.read_bytes(old_key) == old_bytes
+        metadata = old_provenance["manifest"]["params"]["series_metadata"]
+        assert metadata["units"]["label"] == "Billions of Chained 2012 Dollars"
+        assert metadata["frequency"] == "Quarterly"
+        interpretation = second["provenance"]["source_metadata"]["series_interpretation"]
+        assert interpretation["units"] == second["dataset"]["units"]
+        assert interpretation["frequency"] == second["dataset"]["frequency"]
+        if field == "frequency":
+            caveat = next(
+                item for item in second["caveats"] if item["id"] == "fiscus.annualized_flow"
+            )
+            assert "Divide by 12" in caveat["message"]
+        elif field == "seasonal_adjustment":
+            assert second["dataset"]["units"]["annualized"] is False
+        else:
+            assert second["dataset"]["units"]["label"] == replacement
+    assert observation_calls == 2
+
+
+@pytest.mark.parametrize("initially_available", [True, False])
+def test_current_fred_cache_rechecks_observations_when_metadata_availability_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, initially_available: bool,
+) -> None:
+    monkeypatch.setenv("FRED_API_KEY", "k" * 32)
+    available = initially_available
+    observation_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal observation_calls
+        if request.url.path == "/fred/series":
+            return httpx.Response(
+                200,
+                json=FRED_INFO if available else {"seriess": []},
+                request=request,
+            )
+        observation_calls += 1
+        return httpx.Response(
+            200,
+            json={"observations": [{"date": "2024-01-01", "value": str(observation_calls)}]},
+            request=request,
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handler)) as client,
+        FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service,
+    ):
+        first = service.get_series("fred.cpiaucsl")
+        available = not available
+        second = service.get_series("fred.cpiaucsl")
+        third = service.get_series("fred.cpiaucsl")
+        assert second["cache_hit"] is False
+        assert second["preview"]["head"][0]["value"] == "2"
+        assert third["cache_hit"] is True
+        assert first["artifact"]["cache_key"] != second["artifact"]["cache_key"]
+        assert (second["dataset"]["units"]["annualized"] is None) == (not available)
+        assert (first["dataset"]["units"]["annualized"] is None) == (not initially_available)
+    assert observation_calls == 2
+
+
+def test_alfred_chained_dollar_snapshots_do_not_inherit_current_units(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # BEA changed the reference year from 2012 to 2017 on 2023-09-28.
+    # Current FRED metadata is not evidence of the old snapshot's units.
+    monkeypatch.setenv("FRED_API_KEY", "k" * 32)
+    values = {"2023-07-27": "8939.984", "2023-10-26": "10023.101"}
+    observation_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal observation_calls
+        if request.url.path == "/fred/series":
+            return httpx.Response(
+                200,
+                json={"seriess": [{
+                    "id": "PCESVC96",
+                    "title": "Real Personal Consumption Expenditures: Services",
+                    "units": "Billions of Chained 2017 Dollars",
+                    "frequency": "Quarterly",
+                    "seasonal_adjustment": "Seasonally Adjusted Annual Rate",
+                    "observation_start": "1947-01-01",
+                }]},
+                request=request,
+            )
+        observation_calls += 1
+        vintage = request.url.params["realtime_start"]
+        return httpx.Response(
+            200,
+            json={
+                "realtime_start": vintage,
+                "realtime_end": vintage,
+                "observation_start": "2023-04-01",
+                "observation_end": "2023-04-01",
+                "units": "lin",
+                "output_type": 1,
+                "sort_order": "asc",
+                "count": 1,
+                "offset": 0,
+                "limit": 100_000,
+                "observations": [{
+                    "date": "2023-04-01",
+                    "value": values[vintage],
+                    "realtime_start": vintage,
+                    "realtime_end": vintage,
+                }],
+            },
+            request=request,
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service:
+        results = [
+            service.get_series(
+                "fred.pcesvc96", start="2023-04-01", end="2023-04-01", vintage_as_of=vintage
+            )
+            for vintage in values
+        ]
+        cached = service.get_series(
+            "fred.pcesvc96", start="2023-04-01", end="2023-04-01", vintage_as_of="2023-07-27"
+        )
+
+    assert observation_calls == 2
+    for result, (vintage, value) in zip(results, values.items(), strict=True):
+        assert result["preview"]["head"][0]["value"] == value
+        units = result["dataset"]["units"]
+        assert units["label"].startswith(f"unknown for ALFRED as-of {vintage}")
+        assert "current series metadata: Billions of Chained 2017 Dollars" in units["label"]
+        assert units["annualized"] is None
+        assert units["scale"] is None
+        assert units["seasonal_adjustment"] is None
+        caveats = {item["id"]: item for item in result["caveats"]}
+        assert caveats["fred.alfred_units_not_vintage_verified"]["severity"] == "critical"
+        assert "fiscus.annualized_flow" not in caveats
+    assert cached["cache_hit"] is True
+    assert cached["dataset"]["units"] == results[0]["dataset"]["units"]
+    client.close()
+
+
 def test_annualized_percent_metadata_is_not_labeled_as_a_flow() -> None:
     units, caveat = infer_passthrough_units(
         label="Percent Change from Preceding Period, Seasonally Adjusted Annual Rate",
@@ -320,3 +511,17 @@ def test_preview_caps_wide_rows(tmp_path: Path) -> None:
     assert len(full_rows[0]) == 121
     assert "full_data_path" not in result
     assert "manifest_path" not in result
+
+
+def test_preview_cap_applies_to_repeated_and_many_preferred_fields() -> None:
+    from fiscus.return_format import PREVIEW_COLUMN_CAP, preview_rows_for_fields
+
+    row = {f"field{i}": str(i) for i in range(100)}
+    preferred = ["field99", "field99", *row]
+
+    head, tail, truncated = preview_rows_for_fields([row], preferred)
+
+    assert len(head[0]) == PREVIEW_COLUMN_CAP
+    assert next(iter(head[0])) == "field99"
+    assert tail == []
+    assert truncated == {"shown": PREVIEW_COLUMN_CAP, "total": len(row)}

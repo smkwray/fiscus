@@ -6,14 +6,16 @@ import io
 import json
 import os
 import re
+import tempfile
 import zipfile
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
-from fiscus.errors import DatasetNotFoundError, SourceRequestError
+from fiscus.csvutil import delimited_bytes_to_rows
+from fiscus.errors import DatasetNotFoundError, SourceRequestError, SourceSchemaChangedError
 from fiscus.http import HttpRequester, RetryPolicy, redact_url, selected_http_metadata
 
 Z1_POLICY = RetryPolicy(attempts=3, backoff_seconds=1.0, politeness_delay_seconds=0.25)
@@ -54,18 +56,18 @@ class Z1Executor:
     def __init__(self, requester: HttpRequester, package_dir: Path) -> None:
         self.requester = requester
         self.package_dir = package_dir
-        self._index_cache: dict[Path, dict[str, Z1SeriesMeta]] = {}
+        self._index_cache: dict[str, dict[str, Z1SeriesMeta]] = {}
 
     def load_series(self, code: str, *, refresh: bool = False) -> Z1Loaded:
-        zip_path, manifest = self._ensure_package(refresh=refresh)
-        index = self._series_index(zip_path)
+        package, manifest = self._ensure_package(refresh=refresh)
+        index = self._series_index(package, manifest["sha256"])
         meta = index.get(code)
         if meta is None:
             raise DatasetNotFoundError(
                 f"Z.1 series {code} is not present in release {manifest['release_date']}; "
                 "check the mnemonic (including the .Q or .A suffix)"
             )
-        rows = self._read_series(zip_path, meta)
+        rows = self._read_series(package, meta)
         return Z1Loaded(
             rows=rows,
             meta=meta,
@@ -88,8 +90,8 @@ class Z1Executor:
         from fiscus.search import _exact_z1_mnemonic
 
         exact_code = _exact_z1_mnemonic(query)
-        zip_path, manifest = self._ensure_package(refresh=False)
-        index = self._series_index(zip_path)
+        package, manifest = self._ensure_package(refresh=False)
+        index = self._series_index(package, manifest["sha256"])
         if exact_code is not None:
             meta = index.get(exact_code)
             return [] if meta is None else [_search_result(meta, manifest, exact=True)]
@@ -113,22 +115,27 @@ class Z1Executor:
         matches.sort(key=lambda item: (-item[0], item[1].code))
         return [_search_result(meta, manifest, exact=False) for _, meta in matches[:limit]]
 
-    def _ensure_package(self, *, refresh: bool) -> tuple[Path, dict]:
+    def _ensure_package(self, *, refresh: bool) -> tuple[bytes, dict[str, Any]]:
         release_date, _ = self._current_release_date()
         zip_path = self.package_dir / f"z1-release-{release_date}.zip"
         manifest_path = zip_path.with_suffix(".manifest.json")
         if not refresh and zip_path.is_file() and manifest_path.is_file():
             try:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                _validate_package(zip_path, manifest, release_date)
+                package = _validate_package(zip_path, manifest, release_date)
             except (OSError, json.JSONDecodeError, SourceRequestError):
                 pass
             else:
-                return zip_path, manifest
+                return package, manifest
 
         retrieved_at = datetime.now(UTC).isoformat()
         response = self.requester.get(Z1_PACKAGE_URL, policy=Z1_POLICY)
         content = response.content
+        # A release can change between HEAD and GET. Bind the downloaded bytes to
+        # their own response timestamp, rather than the earlier cache preflight.
+        release_date = _release_date(response.headers) or release_date
+        zip_path = self.package_dir / f"z1-release-{release_date}.zip"
+        manifest_path = zip_path.with_suffix(".manifest.json")
         try:
             with zipfile.ZipFile(io.BytesIO(content)) as archive:
                 corrupt_member = archive.testzip()
@@ -141,9 +148,7 @@ class Z1Executor:
         digest = hashlib.sha256(content).hexdigest()
         vintage = f"z1-release:{release_date}|sha256:{digest}"
         self.package_dir.mkdir(parents=True, exist_ok=True)
-        temporary = zip_path.with_name(f".{zip_path.name}.{os.getpid()}.tmp")
-        temporary.write_bytes(content)
-        os.replace(temporary, zip_path)
+        _atomic_write(zip_path, content)
         manifest = {
             "source_url": redact_url(str(response.request.url)),
             "retrieved_at_utc": retrieved_at,
@@ -153,34 +158,28 @@ class Z1Executor:
             "release_date": release_date,
             "http": selected_http_metadata(response.headers),
         }
-        manifest_temporary = manifest_path.with_name(f".{manifest_path.name}.{os.getpid()}.tmp")
-        manifest_temporary.write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        _atomic_write(
+            manifest_path,
+            (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8"),
         )
-        os.replace(manifest_temporary, manifest_path)
-        self._index_cache.pop(zip_path, None)
-        return zip_path, manifest
+        return content, manifest
 
     def _current_release_date(self) -> tuple[str, dict[str, str]]:
         response = self.requester.head(Z1_PACKAGE_URL, policy=Z1_POLICY)
         metadata = selected_http_metadata(response.headers)
-        last_modified = response.headers.get("last-modified")
-        if last_modified:
-            try:
-                parsed = parsedate_to_datetime(last_modified)
-                return parsed.date().isoformat(), metadata
-            except (TypeError, ValueError, OverflowError):
-                pass
+        release_date = _release_date(response.headers)
+        if release_date is not None:
+            return release_date, metadata
         # Explicitly labeled fallback: without Last-Modified the release
         # identity degrades to the retrieval day.
         return f"retrieved-{datetime.now(UTC).date().isoformat()}", metadata
 
-    def _series_index(self, zip_path: Path) -> dict[str, Z1SeriesMeta]:
-        cached = self._index_cache.get(zip_path)
+    def _series_index(self, package: bytes, digest: str) -> dict[str, Z1SeriesMeta]:
+        cached = self._index_cache.get(digest)
         if cached is not None:
             return cached
         index: dict[str, Z1SeriesMeta] = {}
-        with zipfile.ZipFile(zip_path) as archive:
+        with zipfile.ZipFile(io.BytesIO(package)) as archive:
             members = set(archive.namelist())
             for name in sorted(members):
                 if not name.startswith("data_dictionary/") or not name.endswith(".txt"):
@@ -188,7 +187,12 @@ class Z1Executor:
                 csv_member = "csv/" + Path(name).stem + ".csv"
                 if csv_member not in members:
                     continue
-                text = archive.read(name).decode("utf-8", "replace")
+                try:
+                    text = archive.read(name).decode("utf-8-sig")
+                except UnicodeDecodeError:
+                    raise SourceSchemaChangedError(
+                        f"Z.1 data dictionary {name} is not valid UTF-8"
+                    ) from None
                 for line in text.splitlines():
                     fields = line.split("\t")
                     if len(fields) < 5 or not fields[0]:
@@ -204,27 +208,27 @@ class Z1Executor:
                         )
         if not index:
             raise SourceRequestError("Z.1 package contains no data-dictionary series index")
-        self._index_cache[zip_path] = index
+        self._index_cache[digest] = index
         return index
 
-    def _read_series(self, zip_path: Path, meta: Z1SeriesMeta) -> list[dict[str, str]]:
-        with zipfile.ZipFile(zip_path) as archive:
-            text = archive.read(meta.csv_member).decode("utf-8-sig", "replace")
-        reader = csv.DictReader(io.StringIO(text))
-        if not reader.fieldnames or meta.code not in reader.fieldnames:
-            raise SourceRequestError(
-                f"Z.1 table {meta.csv_member} does not contain column {meta.code}"
-            )
-        date_field = reader.fieldnames[0]
+    def _read_series(self, package: bytes, meta: Z1SeriesMeta) -> list[dict[str, str]]:
+        with zipfile.ZipFile(io.BytesIO(package)) as archive:
+            content = archive.read(meta.csv_member)
+        try:
+            source_rows = delimited_bytes_to_rows(content, required_fields=("date", meta.code))
+        except (UnicodeDecodeError, csv.Error, ValueError) as exc:
+            raise SourceSchemaChangedError(
+                f"Z.1 table {meta.csv_member} is not valid tabular data: {exc}"
+            ) from None
         rows = []
-        for row in reader:
-            raw_date = (row.get(date_field) or "").strip()
+        for row in source_rows:
+            raw_date = row["date"].strip()
             if not raw_date:
                 continue
             rows.append(
                 {
                     "date": _normalize_z1_date(raw_date),
-                    "value": (row.get(meta.code) or "").strip(),
+                    "value": row[meta.code].strip(),
                 }
             )
         return rows
@@ -232,14 +236,20 @@ class Z1Executor:
 
 def _normalize_z1_date(raw: str) -> str:
     match = QUARTER_DATE.match(raw)
+    normalized = raw
     if match:
-        return f"{match.group('year')}-{QUARTER_END[match.group('quarter')]}"
-    if re.fullmatch(r"\d{4}", raw):
-        return f"{raw}-12-31"
-    return raw
+        normalized = f"{match.group('year')}-{QUARTER_END[match.group('quarter')]}"
+    elif re.fullmatch(r"\d{4}", raw):
+        normalized = f"{raw}-12-31"
+    try:
+        return date.fromisoformat(normalized).isoformat()
+    except ValueError:
+        raise SourceSchemaChangedError(
+            f"Z.1 has an unsupported observation period: {raw!r}"
+        ) from None
 
 
-def _validate_package(zip_path: Path, manifest: Any, expected_release_date: str) -> None:
+def _validate_package(zip_path: Path, manifest: Any, expected_release_date: str) -> bytes:
     if not isinstance(manifest, dict):
         raise SourceRequestError("Z.1 package manifest root is not an object")
     required_types = {
@@ -277,6 +287,33 @@ def _validate_package(zip_path: Path, manifest: Any, expected_release_date: str)
         raise SourceRequestError("Z.1 package cache is not a valid zip archive") from None
     if corrupt_member is not None:
         raise SourceRequestError(f"Z.1 package cache has a corrupt ZIP member: {corrupt_member}")
+    return content
+
+
+def _release_date(headers: Any) -> str | None:
+    last_modified = headers.get("last-modified")
+    if last_modified:
+        try:
+            return parsedate_to_datetime(last_modified).date().isoformat()
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return None
+
+
+def _atomic_write(destination: Path, content: bytes) -> None:
+    # Separate MCP calls may download concurrently within one process. A PID is
+    # insufficient to keep their temporary files distinct.
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent, delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(content)
+        os.replace(temporary, destination)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _search_result(

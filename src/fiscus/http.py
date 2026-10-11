@@ -88,12 +88,10 @@ class HttpRequester:
     ) -> httpx.Response:
         protected_names = SECRET_QUERY_PARAMS | frozenset(name.casefold() for name in secret_params)
         inspectable_error_statuses = frozenset(return_error_statuses)
-        has_credentials = any(
-            key.casefold() in protected_names and value not in {None, ""}
-            for key, value in (params or {}).items()
-        )
+        request = self.client.build_request(method, url, params=params)
+        has_credentials = _has_credentials(request, protected_names)
         safe_target = redact_url(
-            str(self.client.build_request(method, url, params=params).url),
+            str(request.url),
             protected_names,
         )
         last_error: Exception | None = None
@@ -116,7 +114,10 @@ class HttpRequester:
                     if response.status_code in inspectable_error_statuses:
                         return response
                     safe_url = redact_url(str(response.request.url), protected_names)
-                    detail = "" if has_credentials else _response_detail(response)
+                    credentialed = has_credentials or _has_credentials(
+                        response.request, protected_names
+                    )
+                    detail = "" if credentialed else _response_detail(response)
                     error_type: type[SourceRequestError]
                     if response.status_code in {404, 410}:
                         error_type = SourceRemovedError
@@ -151,7 +152,24 @@ def redact_url(url: str, secret_params: frozenset[str] = SECRET_QUERY_PARAMS) ->
         (key, "REDACTED" if key.casefold() in secret_params else value)
         for key, value in parse_qsl(parts.query, keep_blank_values=True)
     ]
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+    netloc = parts.netloc
+    if "@" in netloc:
+        netloc = "REDACTED@" + netloc.rsplit("@", 1)[1]
+    return urlunsplit((parts.scheme, netloc, parts.path, urlencode(query), parts.fragment))
+
+
+def _has_credentials(request: httpx.Request, protected_names: frozenset[str]) -> bool:
+    return (
+        bool(request.url.userinfo)
+        or any(
+            key.casefold() in protected_names and bool(value)
+            for key, value in request.url.params.multi_items()
+        )
+        or any(
+            request.headers.get(name)
+            for name in ("authorization", "proxy-authorization", "cookie")
+        )
+    )
 
 
 def source_vintage_from_headers(

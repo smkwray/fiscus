@@ -47,7 +47,9 @@ def preview_rows_for_fields(
     columns = list(rows[0]) if rows else []
     if len(columns) <= PREVIEW_COLUMN_CAP:
         return head, tail, None
-    keep = [field for field in preferred_fields if field in columns]
+    keep = list(dict.fromkeys(field for field in preferred_fields if field in columns))[
+        :PREVIEW_COLUMN_CAP
+    ]
     for column in columns:
         if len(keep) >= PREVIEW_COLUMN_CAP:
             break

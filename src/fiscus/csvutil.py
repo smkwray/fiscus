@@ -31,9 +31,28 @@ def delimited_bytes_to_rows(
     data: bytes,
     *,
     delimiter: str = ",",
+    required_fields: Iterable[str] = (),
 ) -> list[dict[str, str]]:
     text = data.decode("utf-8-sig")
-    return [dict(row) for row in csv.DictReader(io.StringIO(text), delimiter=delimiter)]
+    reader = csv.reader(io.StringIO(text), delimiter=delimiter, strict=True)
+    headers = next(reader, None)
+    if not headers or any(not header.strip() for header in headers):
+        raise ValueError("tabular data has an empty or missing header")
+    if len(headers) != len(set(headers)):
+        raise ValueError("tabular data has duplicate headers")
+    missing = sorted(set(required_fields).difference(headers))
+    if missing:
+        raise ValueError(f"tabular data omitted required columns: {', '.join(missing)}")
+    rows = []
+    for values in reader:
+        if not values:
+            continue
+        if len(values) != len(headers):
+            raise ValueError(
+                f"tabular row {reader.line_num} has {len(values)} fields; expected {len(headers)}"
+            )
+        rows.append(dict(zip(headers, values, strict=True)))
+    return rows
 
 
 def csv_bytes_to_rows(data: bytes) -> list[dict[str, str]]:

@@ -72,4 +72,9 @@ else
   exit 1
 fi
 
+# A local denylist adds private byte checks without publishing its terms.
+if [[ -f .private-denylist ]] || compgen -G '.*-private-denylist' > /dev/null; then
+  python3 scripts/privacy_gate.py --require-private --cached
+fi
+
 exit 0

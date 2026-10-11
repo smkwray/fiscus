@@ -14,3 +14,8 @@ uv run pytest
 Catalog changes should include a current `verified_on` date, primary-source evidence, history-boundary checks, and a caveat whenever a reasonable user could choose the wrong unit, concept, or date regime.
 
 This is a solo-maintained utility with no support, response-time, or uptime commitment.
+
+Before publishing, keep real private identifiers in an ignored `.private-denylist`
+(one term per line) and run `python scripts/privacy_gate.py --require-private --outgoing`.
+The check covers Git blobs, paths, commit and tag messages, and references. Public CI
+uses synthetic self-tests; it never receives the private terms.

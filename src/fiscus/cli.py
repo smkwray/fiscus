@@ -169,7 +169,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "mcp":
             from fiscus.mcp_server import main as mcp_main
 
-            return mcp_main()
+            return mcp_main(data_dir=args.data_dir)
 
         with FiscusService(data_dir=args.data_dir) as service:
             if args.command == "find-series":

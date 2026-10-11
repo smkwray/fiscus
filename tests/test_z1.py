@@ -4,12 +4,16 @@ import hashlib
 import io
 import json
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 import httpx
 import pytest
 
-from fiscus.errors import DatasetNotFoundError
+from fiscus.errors import DatasetNotFoundError, SourceSchemaChangedError
+from fiscus.executors.z1 import Z1Executor
+from fiscus.http import HttpRequester
 from fiscus.models import Z1_KIND_CODES
 from fiscus.service import FiscusService, normalize_z1_code
 
@@ -44,7 +48,7 @@ EXPECTED_Z1_CAVEAT_IDS = {
 }
 
 
-def _package_bytes() -> bytes:
+def _package_bytes(*, final_period: str = "2026:Q1") -> bytes:
     dictionary = (
         "FL313020005.Q\tFederal government; checkable deposits; asset\tLine 25\t"
         "F2.2.s Checkable deposits and currency\t"
@@ -59,7 +63,7 @@ def _package_bytes() -> bytes:
         "date,FL313020005.Q,FU313020005.Q,FL999000000.Q\n"
         "1945:Q4,26937,ND,10\n"
         "2025:Q4,830000,-1200,20\n"
-        "2026:Q1,896092,18306,30\n"
+        f"{final_period},896092,18306,30\n"
     )
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
@@ -153,6 +157,171 @@ def _client(package: bytes, counters: dict[str, int]) -> httpx.Client:
         return httpx.Response(200, content=package, headers=headers, request=request)
 
     return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def _revised_package(package: bytes) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(package)) as source, zipfile.ZipFile(buffer, "w") as target:
+        for name in source.namelist():
+            content = source.read(name)
+            content = content.replace(b"Federal government", b"Revised federal government")
+            content = content.replace(b"896092", b"999999")
+            target.writestr(name, content)
+    return buffer.getvalue()
+
+
+def _package_with_member(member: str, content: bytes) -> bytes:
+    buffer = io.BytesIO()
+    with (
+        zipfile.ZipFile(io.BytesIO(_package_bytes())) as source,
+        zipfile.ZipFile(buffer, "w") as target,
+    ):
+        for name in source.namelist():
+            target.writestr(name, content if name == member else source.read(name))
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"date,FL313020005.Q,FL313020005.Q\n2026:Q1,1,999\n",
+        b"date,FL313020005.Q\n2026:Q1\n",
+        b"date,FL313020005.Q\n2026:Q1,1,999\n",
+        b"date,FL313020005.Q\n2026:Q1,\xff\n",
+        b"period,FL313020005.Q\n2026:Q1,1\n",
+        b"date,FU313020005.Q\n2026:Q1,1\n",
+        b'date,FL313020005.Q\n2026:Q1,"1\n',
+    ],
+    ids=[
+        "duplicate-header", "short-row", "extra-cell", "invalid-utf8", "no-date", "no-code", "quote"
+    ],
+)
+def test_z1_rejects_malformed_csv_inside_valid_zip(tmp_path: Path, content: bytes) -> None:
+    package = _package_with_member("csv/F2_2_s.csv", content)
+    with zipfile.ZipFile(io.BytesIO(package)) as archive:
+        assert archive.testzip() is None
+    with (
+        _client(package, {}) as client,
+        FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service,
+        pytest.raises(SourceSchemaChangedError),
+    ):
+        service.z1_series("FL313020005.Q", "FL")
+
+
+def test_z1_rejects_invalid_utf8_dictionary_inside_valid_zip(tmp_path: Path) -> None:
+    package = _package_with_member(
+        "data_dictionary/F2_2_s.txt",
+        b"FL313020005.Q\tInvalid \xff metadata\tLine 25\tF2.2.s\tMillions of dollars\n",
+    )
+    with zipfile.ZipFile(io.BytesIO(package)) as archive:
+        assert archive.testzip() is None
+    with (
+        _client(package, {}) as client,
+        FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service,
+        pytest.raises(SourceSchemaChangedError, match=r"dictionary.*UTF-8"),
+    ):
+        service.z1_series("FL313020005.Q", "FL")
+
+
+def test_z1_download_binds_release_to_get_response_when_head_changes(tmp_path: Path) -> None:
+    package = _package_bytes()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        modified = (
+            "Thu, 11 Jun 2026 16:00:11 GMT"
+            if request.method == "HEAD"
+            else "Fri, 12 Jun 2026 16:00:11 GMT"
+        )
+        return httpx.Response(
+            200, content=package, headers={"Last-Modified": modified}, request=request
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handler)) as client,
+        FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service,
+    ):
+        result = service.z1_series("FL313020005.Q", "FL")
+
+    assert result["provenance"]["source_metadata"]["release_date"] == "2026-06-12"
+    assert result["provenance"]["vintage"].startswith("z1-release:2026-06-12|")
+
+
+def test_z1_refresh_by_another_executor_invalidates_dictionary_cache(tmp_path: Path) -> None:
+    original = _package_bytes()
+    packages = iter([original, _revised_package(original)])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"" if request.method == "HEAD" else next(packages),
+            headers={"Last-Modified": "Thu, 11 Jun 2026 16:00:11 GMT"},
+            request=request,
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        requester = HttpRequester(client=client, sleep=lambda _: None)
+        first = Z1Executor(requester, tmp_path)
+        second = Z1Executor(requester, tmp_path)
+        assert first.load_series("FL313020005.Q").meta.description.startswith("Federal")
+        second.load_series("FL313020005.Q", refresh=True)
+        updated = first.load_series("FL313020005.Q")
+
+    assert updated.meta.description.startswith("Revised federal")
+    assert updated.rows[-1]["value"] == "999999"
+
+
+def test_z1_read_uses_the_bytes_validated_for_its_provenance(tmp_path: Path, monkeypatch) -> None:
+    original = _package_bytes()
+    revised = _revised_package(original)
+    counters: dict[str, int] = {}
+    with _client(original, counters) as client:
+        executor = Z1Executor(HttpRequester(client=client, sleep=lambda _: None), tmp_path)
+        build_index = executor._series_index
+
+        def replace_after_index(*args, **kwargs):
+            index = build_index(*args, **kwargs)
+            (tmp_path / "z1-release-2026-06-11.zip").write_bytes(revised)
+            return index
+
+        monkeypatch.setattr(executor, "_series_index", replace_after_index)
+        result = executor.load_series("FL313020005.Q")
+
+    assert result.rows[-1]["value"] == "896092"
+    assert result.package_metadata["package_sha256"] == hashlib.sha256(original).hexdigest()
+
+
+def test_z1_concurrent_downloads_use_distinct_temporary_files(tmp_path: Path, monkeypatch) -> None:
+    import os
+
+    ready = Barrier(2)
+    replace = os.replace
+
+    def simultaneous_replace(source, destination):
+        if Path(destination).suffix == ".zip":
+            ready.wait(timeout=5)
+        return replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", simultaneous_replace)
+    with _client(_package_bytes(), {}) as client:
+        requester = HttpRequester(client=client, sleep=lambda _: None)
+        executors = [Z1Executor(requester, tmp_path) for _ in range(2)]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(
+                pool.map(lambda executor: executor.load_series("FL313020005.Q"), executors)
+            )
+
+    assert len(results) == 2
+    assert results[0].vintage == results[1].vintage
+
+
+@pytest.mark.parametrize("period", ["2026:Q5", "0000:Q1", "2026-02-30", "unknown"])
+def test_z1_rejects_unrecognized_or_invalid_source_periods(tmp_path: Path, period: str) -> None:
+    with (
+        _client(_package_bytes(final_period=period), {}) as client,
+        FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service,
+        pytest.raises(SourceSchemaChangedError, match="observation period"),
+    ):
+        service.z1_series("FL313020005.Q", "FL", start="2026-01-01")
 
 
 def test_z1_code_normalization() -> None:

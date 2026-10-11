@@ -7,13 +7,13 @@ fiscus leads with the plumbing that generic macro-data wrappers usually omit: Tr
 ## Install
 
 ```bash
-uv tool install fiscus
+uv tool install git+https://github.com/smkwray/fiscus.git
 ```
 
 For a one-off invocation without installation:
 
 ```bash
-uvx fiscus find-series "Treasury General Account"
+uvx --from git+https://github.com/smkwray/fiscus.git fiscus find-series "Treasury General Account"
 ```
 
 ## Zero-key quickstart
@@ -21,9 +21,9 @@ uvx fiscus find-series "Treasury General Account"
 FRED public CSV and Treasury FiscalData work without credentials.
 
 ```bash
-uvx fiscus find-series "TGA Wednesday level"
-uvx fiscus get-series fred.wdtgal --start 2024-01-01
-uvx fiscus fiscaldata-query fiscaldata.dts_operating_cash_balance \
+fiscus find-series "TGA Wednesday level"
+fiscus get-series fred.wdtgal --start 2024-01-01
+fiscus fiscaldata-query fiscaldata.dts_operating_cash_balance \
   --param 'filter=record_date:gte:2024-01-01' \
   --param 'sort=record_date' \
   --max-pages 2
@@ -41,7 +41,7 @@ information dates are rejected because today's information set remains mutable.
 The server has a dedicated executable so an interactive `fiscus` command never appears to hang on stdio:
 
 ```bash
-uvx --from fiscus fiscus-mcp
+uvx --from git+https://github.com/smkwray/fiscus.git fiscus-mcp
 ```
 
 Generic client configuration:
@@ -51,7 +51,7 @@ Generic client configuration:
   "mcpServers": {
     "fiscus": {
       "command": "uvx",
-      "args": ["--from", "fiscus", "fiscus-mcp"]
+      "args": ["--from", "git+https://github.com/smkwray/fiscus.git", "fiscus-mcp"]
     }
   }
 }
@@ -82,7 +82,7 @@ fiscus mcp
 
 Call `find-series` before a fetch command. Dataset identifiers are curated catalog IDs — but coverage is not limited to the catalog:
 
-- **Uncataloged passthrough:** any FRED or BLS series is fetchable as `fred.<SERIES_ID>` / `bls.<SERIES_ID>`. Keyed FRED requests derive units, seasonal adjustment, annualization, and a conservative `unit_class` from official series metadata. Detected annual-rate series receive an explicit interpretation caveat; the keyless FRED graph route and current BLS data route report annualization as unknown and warn the caller to verify before treating observations as period flows. Every passthrough remains marked "uncataloged — no curated caveat review." The catalog is for caveats, not coverage.
+- **Uncataloged passthrough:** any FRED or BLS series is fetchable as `fred.<SERIES_ID>` / `bls.<SERIES_ID>`. Keyed current FRED requests derive units, seasonal adjustment, annualization, and a conservative `unit_class` from official series metadata. Historical uncataloged ALFRED snapshots label their units as unverified for the requested vintage, since current metadata can describe a different reference base or unit regime. Detected annual-rate series receive an explicit interpretation caveat; the keyless FRED graph route and current BLS data route report annualization as unknown and warn the caller to verify before treating observations as period flows. BLS observation footnotes, including preliminary flags, are retained as JSON in the CSV `footnotes` column. Every passthrough remains marked "uncataloged — no curated caveat review." The catalog is for caveats, not coverage.
 - **Upstream search fallback:** when `find-series` has no complete catalog match, it appends candidates from FRED's own search (requires `FRED_API_KEY`), clearly marked uncurated, so an empty result is a lead rather than a dead end.
 - **Curated release files:** Census vintage files and archived BLS releases carry a
   logical release id and representation. Their immutable source identity appends the
@@ -143,6 +143,20 @@ The cache defaults to the platform's device-local cache directory and can be rel
 The cache is durable across fiscus processes but is still a cache: operating-system cleanup, an explicit user deletion, or a replaced device can remove it. `cache export` / `export_artifact` creates a caller-owned file at the requested destination when archival or handoff durability matters. Conversely, a `local_file` catalog entry already points to caller-owned content, so its response keeps the real in-place `full_data_path` and `manifest_path: null` and never enters SQLite.
 
 `--refresh` bypasses the latest pointer and re-reads the source. Current FRED responses use HTTP validators or retrieval UTC as immutable identity; their default real-time dates remain metadata. Historical FRED requests use `alfred-as-of:DATE`, and the date also enters canonical request parameters. Bytes already stored under one dataset/canonical-params/vintage identity are never mutated.
+
+Mutable latest requests are re-fetched after 24 hours rather than serving an
+indefinitely stale cache entry. Explicit ALFRED information dates, SOMA as-of
+dates, and static release files retain their immutable-cache behavior. Z.1 series
+cache hits must match the package vintage currently selected. Cache exports must
+target a path outside the cache directory to protect its database and packages.
+
+Exact date bounds on the deprecated BEA `get-series` alias produce a bounded CSV
+artifact. Its provenance links the canonical year-wide source artifact and labels
+the inclusive date filter; the observation values are unchanged. FiscalData
+provenance preserves the provider's field labels, types, and formats. In
+particular, MSPD Table 3 monetary amounts are millions of dollars, while its rates
+are percent. CES payroll employment counts jobs, which can count a multiple
+jobholder more than once; it is not a count of employed people.
 
 ### Legacy v1 migration
 

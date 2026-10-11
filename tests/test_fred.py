@@ -169,6 +169,25 @@ def test_keyed_fred_same_day_refresh_uses_http_revision_identity(
     client.close()
 
 
+def test_current_fred_refuses_silent_page_truncation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FRED_API_KEY", "k" * 32)
+    payload = {
+        "count": 2,
+        "observations": [{"date": "2026-07-08", "value": "1"}],
+    }
+    client = httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json=payload, request=request)
+    ))
+    with (
+        FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service,
+        pytest.raises(SourceRequestError, match="incomplete observation page"),
+    ):
+        service.get_series("fred.wdtgal")
+    client.close()
+
+
 ALFRED_HISTORY_ERROR = (
     "Bad Request.  The series does not exist in ALFRED but may exist in FRED.  "
     "Try setting realtime_start and realtime_end to today's date or removing the "

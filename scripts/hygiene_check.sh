@@ -37,8 +37,8 @@ fi
 
 # Tracked-eligible source roots. Override via HYGIENE_SCAN_ROOTS env var
 # if your project uses a different layout.
-SCAN_ROOTS=(${HYGIENE_SCAN_ROOTS:-src scripts config configs tests})
-TOP_LEVEL_FILES=(README.md CITATION.cff pyproject.toml setup.py setup.cfg)
+SCAN_ROOTS=(${HYGIENE_SCAN_ROOTS:-src scripts catalog .github .githooks config configs tests})
+TOP_LEVEL_FILES=(README.md CONTRIBUTING.md SECURITY.md LICENSE CITATION.cff pyproject.toml setup.py setup.cfg)
 
 # Sibling project roots to also scan for cache leaks (space-separated).
 SIBLING_PROJECTS=(${HYGIENE_SIBLING_PROJECTS:-})
@@ -168,7 +168,7 @@ else
 fi
 
 # (Repo-local .venv/cache directories are no longer policed — they're ignored by
-# git, Syncthing, rclone, and local tooling, so they never propagate.)
+# version control and local synchronization, so they never propagate.)
 
 if [[ "$violations" -gt 0 ]]; then
   echo "hygiene_check: FAIL ($violations violation(s), $warnings warning(s))" >&2

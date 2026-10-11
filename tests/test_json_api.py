@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 import httpx
 import pytest
 
+from fiscus.catalog import Catalog
 from fiscus.errors import (
     InvalidCredentialError,
     MissingKeyError,
@@ -13,6 +15,7 @@ from fiscus.errors import (
     SourceRequestError,
 )
 from fiscus.executors.json_api import bea_period_end
+from fiscus.models import CatalogEntry
 from fiscus.service import FiscusService
 
 BEA_INVENTORY_PAYLOAD = {
@@ -119,6 +122,45 @@ BEA_QUERY_ERROR_PAYLOADS = [
 OFR_PAYLOAD = [["2026-04-30", 8351000000000.12], ["2026-05-31", 8400986581507.48]]
 
 
+def test_custom_credential_is_absent_from_success_and_cached_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "synthetic-private-source-key"
+    monkeypatch.setenv("SYNTHETIC_SOURCE_API_KEY", secret)
+    raw = Catalog.load().get("ofr.mmf_total_assets").model_dump(mode="python")
+    raw["endpoint"]["url"] = "https://example.test/data"
+    raw["endpoint"]["api_key_param"] = "CustomCredential"
+    raw["access"]["auth"] = {"mode": "required", "env_var": "SYNTHETIC_SOURCE_API_KEY"}
+    catalog = Catalog([CatalogEntry.model_validate(raw)], ["synthetic-overlay"])
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.url.params["CustomCredential"] == secret
+        return httpx.Response(
+            200,
+            json=[{"date": "2026-05-31", "value": "1", secret: secret}],
+            headers={"etag": secret},
+            request=request,
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handler)) as client,
+        FiscusService(
+            catalog=catalog, data_dir=tmp_path, http_client=client, sleep=lambda _: None,
+        ) as service,
+    ):
+        first = service.get_series("ofr.mmf_total_assets")
+        repeated = service.get_series("ofr.mmf_total_assets")
+        key = first["artifact"]["cache_key"]
+        assert "CustomCredential=REDACTED" in first["provenance"]["source_url"]
+        assert repeated["cache_hit"] is True
+        assert secret.encode() not in service.read_bytes(key)
+        assert secret not in json.dumps([first, repeated, service.provenance(key)])
+    assert calls == 1
+
+
 def test_bea_period_end_normalization() -> None:
     assert bea_period_end("2025Q1") == "2025-03-31"
     assert bea_period_end("2025M03") == "2025-03-31"
@@ -127,6 +169,7 @@ def test_bea_period_end_normalization() -> None:
     assert bea_period_end("2100M02") == "2100-02-28"
     assert bea_period_end("2025") == "2025-12-31"
     assert bea_period_end("garbage") == ""
+    assert bea_period_end("oopsQ1") == ""
 
 
 def test_bea_requires_key_and_redacts_it(tmp_path: Path, monkeypatch) -> None:
@@ -173,8 +216,18 @@ def test_bea_requires_key_and_redacts_it(tmp_path: Path, monkeypatch) -> None:
             start="2025-04-01",
             end="2025-12-31",
         )
+        repeated = service.get_series(
+            "bea.nipa_t10106",
+            start="2025-04-01",
+            end="2025-12-31",
+        )
+        canonical = service.bea_nipa_table("T10106", "Q", 2025, 2025)
         artifact_bytes = service.read_bytes(result["artifact"]["cache_key"])
         stored_contract = service.provenance(result["artifact"]["cache_key"])
+        bounded_bytes = service.read_bytes(bounded["artifact"]["cache_key"])
+        bounded_rows = list(service.iter_csv_rows(bounded["artifact"]["cache_key"]))
+        bounded_manifest = service.provenance(bounded["artifact"]["cache_key"])["manifest"]
+        canonical_rows = list(service.iter_csv_rows(canonical["artifact"]["cache_key"]))
 
     assert secret not in json.dumps(result)
     assert secret.encode() not in artifact_bytes
@@ -199,7 +252,28 @@ def test_bea_requires_key_and_redacts_it(tmp_path: Path, monkeypatch) -> None:
         "row_count": 1,
         "line_count": 1,
     }
-    assert bounded["artifact"] == result["artifact"]
+    assert bounded["artifact"]["cache_key"] != result["artifact"]["cache_key"]
+    assert [row["date"] for row in bounded_rows] == ["2025-06-30"]
+    assert len(bounded_rows) == bounded["preview"]["row_count"]
+    assert bounded["artifact"]["sha256"] == hashlib.sha256(bounded_bytes).hexdigest()
+    assert bounded["provenance"]["sha256"] == bounded["artifact"]["sha256"]
+    assert bounded_manifest["row_count"] == len(bounded_rows)
+    assert bounded_manifest["params"]["start"] == "2025-04-01"
+    assert bounded_manifest["params"]["end"] == "2025-12-31"
+    assert bounded["provenance"]["source_artifact"] == canonical["artifact"]
+    assert bounded["provenance"]["source_request"] == canonical["provenance"]["source_request"]
+    assert bounded["provenance"]["transform"] == {
+        "operation": "inclusive_calendar_date_filter",
+        "field": "date",
+        "start": "2025-04-01",
+        "end": "2025-12-31",
+        "values_changed": False,
+    }
+    assert [row["date"] for row in canonical_rows] == ["2025-03-31", "2025-06-30"]
+    assert canonical["preview"]["row_count"] == 2
+    assert bounded["cache_hit"] is False
+    assert repeated["cache_hit"] is True
+    assert repeated["artifact"] == bounded["artifact"]
     caveats = {item["id"]: item for item in result["caveats"]}
     assert set(caveats) >= {
         "bea.nipa_observed_rows",
@@ -209,6 +283,50 @@ def test_bea_requires_key_and_redacts_it(tmp_path: Path, monkeypatch) -> None:
     assert "bea.saar_unit_mixing" not in caveats
     assert caveats["bea.saar_units"]["severity"] == "critical"
     assert "Divide by four" in caveats["bea.saar_units"]["message"]
+    client.close()
+
+
+@pytest.mark.parametrize(("start", "end", "expected_dates"), [
+    (None, None, ["2025-03-31", "2025-06-30"]),
+    (None, "2025-04-01", ["2025-03-31"]),
+    ("2025-04-01", None, ["2025-06-30"]),
+    ("2025-04-01", "2025-04-15", []),
+])
+def test_bea_alias_artifact_preserves_open_or_empty_date_bounds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    start: str | None,
+    end: str | None,
+    expected_dates: list[str],
+) -> None:
+    monkeypatch.setenv("BEA_API_KEY", "test-bea-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = (
+            BEA_INVENTORY_PAYLOAD
+            if request.url.params["method"] == "GetParameterValues"
+            else BEA_PAYLOAD
+        )
+        return httpx.Response(200, json=payload, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service:
+        first = service.get_series("bea.nipa_t10106", start=start, end=end)
+        repeated = service.get_series("bea.nipa_t10106", start=start, end=end)
+        rows = list(service.iter_csv_rows(first["artifact"]["cache_key"]))
+        receipt = service.provenance(first["artifact"]["cache_key"])
+    assert [row["date"] for row in rows] == expected_dates
+    assert len(rows) == first["preview"]["row_count"] == first["provenance"]["row_count"]
+    assert receipt["manifest"]["row_count"] == len(rows)
+    assert first["cache_hit"] is False
+    assert repeated["cache_hit"] is True
+    assert first["artifact"] == repeated["artifact"]
+    if start is not None or end is not None:
+        assert first["provenance"]["transform"]["start"] == start
+        assert first["provenance"]["transform"]["end"] == end
+        assert first["provenance"]["source_artifact"]["sha256"]
+    else:
+        assert "transform" not in first["provenance"]
     client.close()
 
 
@@ -299,4 +417,26 @@ def test_json_api_rejects_undeclared_params(tmp_path: Path) -> None:
             service.catalog.get("ofr.mmf_total_assets"),
             params={"mnemonic": "SOMETHING-ELSE"},
         )
+    client.close()
+
+
+@pytest.mark.parametrize("start", [None, "2026-10-08"])
+def test_json_api_date_bounds_include_source_timestamp_on_end_date(
+    tmp_path: Path, start: str | None
+) -> None:
+    payload = [
+        {"auctionDate": "2026-10-08T00:00:00", "totalAccepted": "1"},
+        {"auctionDate": "2026-10-09T00:00:00", "totalAccepted": "2"},
+        {"auctionDate": "", "totalAccepted": "3"},
+        {"auctionDate": "bad-date", "totalAccepted": "4"},
+    ]
+    client = httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json=payload, request=request)
+    ))
+    with FiscusService(data_dir=tmp_path, http_client=client, sleep=lambda _: None) as service:
+        result = service.get_series(
+            "treasurydirect.auctioned_securities", start=start, end="2026-10-08"
+        )
+    assert result["preview"]["row_count"] == 1
+    assert result["preview"]["head"][0]["auctionDate"] == "2026-10-08T00:00:00"
     client.close()
