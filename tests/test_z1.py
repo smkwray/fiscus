@@ -49,6 +49,7 @@ EXPECTED_Z1_CAVEAT_IDS = {
 
 
 def _package_bytes(*, final_period: str = "2026:Q1") -> bytes:
+    # ZipInfo uses a fixed 1980 timestamp; fixture bytes must not depend on the clock.
     dictionary = (
         "FL313020005.Q\tFederal government; checkable deposits; asset\tLine 25\t"
         "F2.2.s Checkable deposits and currency\t"
@@ -67,8 +68,8 @@ def _package_bytes(*, final_period: str = "2026:Q1") -> bytes:
     )
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
-        archive.writestr("data_dictionary/F2_2_s.txt", dictionary)
-        archive.writestr("csv/F2_2_s.csv", table)
+        archive.writestr(zipfile.ZipInfo("data_dictionary/F2_2_s.txt"), dictionary)
+        archive.writestr(zipfile.ZipInfo("csv/F2_2_s.csv"), table)
     return buffer.getvalue()
 
 
@@ -97,8 +98,8 @@ def _accumulation_package_bytes() -> bytes:
     )
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
-        archive.writestr("data_dictionary/S1M_r.txt", dictionary)
-        archive.writestr("csv/S1M_r.csv", table)
+        archive.writestr(zipfile.ZipInfo("data_dictionary/S1M_r.txt"), dictionary)
+        archive.writestr(zipfile.ZipInfo("csv/S1M_r.csv"), table)
     return buffer.getvalue()
 
 
@@ -112,8 +113,8 @@ def _exact_discovery_package_bytes() -> bytes:
     table = "date," + ",".join(codes) + "\n2026:Q1,1,2,3\n"
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
-        archive.writestr("data_dictionary/F9_9.txt", dictionary)
-        archive.writestr("csv/F9_9.csv", table)
+        archive.writestr(zipfile.ZipInfo("data_dictionary/F9_9.txt"), dictionary)
+        archive.writestr(zipfile.ZipInfo("csv/F9_9.csv"), table)
     return buffer.getvalue()
 
 
@@ -142,8 +143,8 @@ def _all_prefix_package_bytes() -> bytes:
     ) + "\n"
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
-        archive.writestr("data_dictionary/F9_9.txt", dictionary)
-        archive.writestr("csv/F9_9.csv", table)
+        archive.writestr(zipfile.ZipInfo("data_dictionary/F9_9.txt"), dictionary)
+        archive.writestr(zipfile.ZipInfo("csv/F9_9.csv"), table)
     return buffer.getvalue()
 
 
@@ -166,7 +167,7 @@ def _revised_package(package: bytes) -> bytes:
             content = source.read(name)
             content = content.replace(b"Federal government", b"Revised federal government")
             content = content.replace(b"896092", b"999999")
-            target.writestr(name, content)
+            target.writestr(zipfile.ZipInfo(name), content)
     return buffer.getvalue()
 
 
@@ -177,7 +178,9 @@ def _package_with_member(member: str, content: bytes) -> bytes:
         zipfile.ZipFile(buffer, "w") as target,
     ):
         for name in source.namelist():
-            target.writestr(name, content if name == member else source.read(name))
+            target.writestr(
+                zipfile.ZipInfo(name), content if name == member else source.read(name)
+            )
     return buffer.getvalue()
 
 
