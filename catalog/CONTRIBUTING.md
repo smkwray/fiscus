@@ -2,20 +2,11 @@
 
 The catalog is for **caveats, not coverage**. Executors already know how each source
 family works, and uncataloged FRED/BLS/Z.1 series are served on demand with a generic
-warning. Add an entry only when there is something worth encoding: a footgun, a unit
+warning. Add an entry only when there is something worth encoding: a unit
 trap, a history seam, an access quirk, or a series important enough to deserve verified
 metadata and good aliases.
 
-## The rule that matters most
-
-**Never write a fact you did not verify.** Every entry carries `verified_on`; that date
-is a promise that on that day you personally (or your agent) probed the endpoint and
-confirmed the fields you wrote — the URL shape, the earliest observation, the units,
-the caveat's factual claim. Copying a boundary from documentation without checking it
-is how fabricated metadata enters a catalog. If you cannot verify a field, omit it or
-say so in a `notes:` line; never guess.
-
-## Recipe
+## Verify and add an entry
 
 1. **Probe the endpoint live.** Fetch one small response. Confirm: status 200 for a
    non-browser client, response shape, the earliest available observation (query with
@@ -33,16 +24,14 @@ say so in a `notes:` line; never guess.
    warning as a separate conditional caveat.
 5. **Validate:** `uv run fiscus catalog lint` must pass (strict schema, ID uniqueness,
    executor contracts), then `uv run pytest` (entries are data; the suite stays green).
-6. **Set `verified_on`** to the date of step 1 — not today's date if you verified
-   earlier, not a hoped-for date.
+6. **Set `verified_on`** to the date you checked the endpoint.
 
 ## Sources that block automated clients
 
 If an endpoint returns 403 to non-browser clients (bls.gov tables, cbo.gov workbooks),
 that fact is itself catalog-worthy: add an entry with
 `access: {executor: browser_download, mode: browser_download_only}` and a critical
-caveat explaining the block and the manual alternative. An explicit diagnosis beats a
-mysterious failure.
+caveat explaining the block and the manual alternative.
 
 ## Private and local entries: overlays
 
