@@ -28,10 +28,10 @@ metadata and good aliases.
 
 ## Sources that block automated clients
 
-If an endpoint returns 403 to non-browser clients (bls.gov tables, cbo.gov workbooks),
-that fact is itself catalog-worthy: add an entry with
-`access: {executor: browser_download, mode: browser_download_only}` and a critical
-caveat explaining the block and the manual alternative.
+A single HTTP 403 or 451 on a machine route is reported as `source_access_denied`.
+Use `access: {executor: browser_download, mode: browser_download_only}` when you
+have confirmed that the source requires a browser. Include a caveat explaining
+how to download the file.
 
 ## Private and local entries: overlays
 
